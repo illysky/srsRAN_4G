@@ -2560,8 +2560,9 @@ liblte_mme_unpack_tracking_area_identity_list_ie(uint8**                        
     length           = 1;
     tai_list->N_tais = 0;
     while (length < sent_length) {
+      // 24.301 9.9.3.33: the number of elements field is encoded as the number of elements minus one
       type    = (LIBLTE_MME_TRACKING_AREA_IDENTITY_LIST_TYPE_ENUM)(((*ie_ptr)[length] >> 5) & 0x03);
-      N_elems = (*ie_ptr)[length++] & 0x1F;
+      N_elems = ((*ie_ptr)[length++] & 0x1F) + 1;
       if (LIBLTE_MME_TRACKING_AREA_IDENTITY_LIST_TYPE_ONE_PLMN_NON_CONSECUTIVE_TACS == type) {
         mcc = ((*ie_ptr)[length] & 0x0F) * 100;
         mcc += (((*ie_ptr)[length++] >> 4) & 0x0F) * 10;
