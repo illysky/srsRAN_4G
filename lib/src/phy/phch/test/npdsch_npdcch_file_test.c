@@ -53,6 +53,8 @@ uint32_t        sched_info_tag = 0; // Value of schedulingInfoSIB1-NB-r13
 srsran_mib_nb_t mib;
 bool            decode_sib1 = false;
 float           snr         = -1.0;
+const char*     sib1_dump_name = NULL; // -D: write the last decoded SIB1-NB transport block here
+uint32_t        sib1_dumped    = 0;
 
 srsran_dci_format_t  dci_format = SRSRAN_DCI_FORMAT1;
 srsran_filesource_t  fsrc;
@@ -61,7 +63,7 @@ cf_t*                buff_ptrs[SRSRAN_MAX_PORTS] = {NULL, NULL, NULL, NULL};
 
 void usage(char* prog)
 {
-  printf("Usage: %s [rovcnwmpstRxPMIS] -i input_file\n", prog);
+  printf("Usage: %s [rovcnwmpstRxPMISD] -i input_file\n", prog);
   printf("\t-o DCI format [Default %s]\n", srsran_dci_format_string(dci_format));
   printf("\t-c n_id_ncell [Default %d]\n", cell.n_id_ncell);
   printf("\t-s Start subframe_idx [Default %d]\n", sf_idx);
@@ -79,6 +81,7 @@ void usage(char* prog)
          cell.mode);
   printf("\t-I LTE cell id (PCI) of the carrier NB-IoT is deployed in [Default %d]\n", cell.base.id);
   printf("\t-S input uses standard LTE sample rates (7.68 MS/s for 25 PRB), as srsenb does with lte_sample_rates\n");
+  printf("\t-D FILE write the last decoded SIB1-NB transport block to FILE (use with -k)\n");
   printf("\t-v [set srsran_verbose to debug, default none]\n");
 }
 
@@ -86,7 +89,7 @@ void parse_args(int argc, char** argv)
 {
   int opt;
   bool n_id_ncell_given = false;
-  while ((opt = getopt(argc, argv, "irovcnmwpkstxPMIS")) != -1) {
+  while ((opt = getopt(argc, argv, "irovcnmwpkstxPMISD")) != -1) {
     switch (opt) {
       case 'i':
         input_file_name = argv[optind];
@@ -136,6 +139,9 @@ void parse_args(int argc, char** argv)
         break;
       case 'k':
         decode_sib1 = true;
+        break;
+      case 'D':
+        sib1_dump_name = argv[optind];
         break;
       case 'p':
         cell.base.nof_ports = (uint32_t)strtol(argv[optind], NULL, 10);
@@ -272,6 +278,16 @@ int main(int argc, char** argv)
           if (n == SRSRAN_SUCCESS) {
             INFO("NPDSCH decoded ok.");
 
+            if (sib1_dump_name && ue_dl.npdsch_cfg.has_bcch) {
+              // data holds the decoded transport block, packed into bytes
+              FILE* df = fopen(sib1_dump_name, "wb");
+              if (df) {
+                fwrite(data, 1, ue_dl.npdsch_cfg.grant.mcs[0].tbs / 8, df);
+                fclose(df);
+                sib1_dumped++;
+              }
+            }
+
             if (decode_sib1) {
               srsran_nbiot_ue_dl_decode_sib1(&ue_dl, sfn);
             }
@@ -334,6 +350,9 @@ int main(int argc, char** argv)
   uint32_t pkts_ok = ue_dl.pkts_ok;
   printf("pkt_total=%d\n", ue_dl.pkts_total);
   printf("pkt_ok=%d\n", pkts_ok);
+  if (sib1_dump_name) {
+    printf("sib1_dumped=%u\n", sib1_dumped);
+  }
   printf("pkt_errors=%d\n", ue_dl.pkt_errors);
   printf("bler=%.2f\n", ue_dl.pkts_total ? (float)100 * ue_dl.pkt_errors / ue_dl.pkts_total : 0);
   printf("rate=%.2f\n", ((ue_dl.bits_total / ((nof_frames * 10 + sf_idx) / 1000.0)) / 1000.0));

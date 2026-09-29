@@ -52,6 +52,13 @@ static const uint8_t dummy_sib1_payload[] = {0x43, 0x4d, 0xd0, 0x92, 0x22, 0x06,
                                              0x6e, 0x87, 0xd0, 0x4b, 0x13, 0x90, 0xb4, 0x12, 0xa1,
                                              0x02, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
+// SIB1-NB transport block that is actually broadcast. Defaults to the captured payload above; -B replaces it with a
+// block built for this cell (see nbiot_sib_pack).
+static const char*   sib1_file_name = NULL;
+static uint8_t       sib1_file_payload[SRSRAN_NPDSCH_MAX_TBS];
+static const uint8_t* sib1_payload    = dummy_sib1_payload;
+static uint32_t      sib1_payload_len = sizeof(dummy_sib1_payload);
+
 #ifndef DISABLE_RF
 #include "srsran/phy/rf/rf.h"
 static srsran_rf_t radio;
@@ -104,7 +111,7 @@ static int   sf_n_re = 0, sf_n_samples = 0;
 
 void usage(char* prog)
 {
-  printf("Usage: %s [aeOgfostmirnlRpvNMcS]\n", prog);
+  printf("Usage: %s [aeOgfostmirnlRpvNMcSB]\n", prog);
 #ifndef DISABLE_RF
   printf("\t-a RF args [Default %s]\n", rf_args);
   printf("\t-e RF amplitude [Default %.2f]\n", rf_amp);
@@ -128,6 +135,7 @@ void usage(char* prog)
   printf("\t-M operation mode: 0=inband-samePCI 1=inband-differentPCI 2=guardband 3=standalone [Default %d]\n",
          cell.mode);
   printf("\t-c LTE cell id (PCI) of the carrier NB-IoT is deployed in [Default %d]\n", cell.base.id);
+  printf("\t-B SIB1-NB transport block file (from nbiot_sib_pack -o) to broadcast instead of the captured dummy one\n");
   printf("\t-S use standard LTE sample rates (7.68 MS/s for 25 PRB), as srsenb does with expert.lte_sample_rates\n");
   printf("\t-v [set srsran_verbose to debug, default none]\n");
 }
@@ -136,7 +144,7 @@ void parse_args(int argc, char** argv)
 {
   int opt;
   bool n_id_ncell_given = false;
-  while ((opt = getopt(argc, argv, "aeOgfostmirnlRpvNMcS")) != -1) {
+  while ((opt = getopt(argc, argv, "aeOgfostmirnlRpvNMcSB")) != -1) {
     switch (opt) {
       case 'a':
         rf_args = argv[optind];
@@ -195,6 +203,9 @@ void parse_args(int argc, char** argv)
         break;
       case 'S':
         srsran_use_standard_symbol_size(true);
+        break;
+      case 'B':
+        sib1_file_name = argv[optind];
         break;
       case 'R':
         cell.is_r14 = !cell.is_r14;
@@ -520,6 +531,32 @@ int main(int argc, char** argv)
     srsran_nbiot_prb_to_crs_seq_info(cell.base.nof_prb, cell.nbiot_prb, &mib_nb.eutra_crs_seq_info, NULL);
   }
 
+  // Optional real SIB1-NB. It must be exactly one SIB1 transport block: a shorter file would leave the rest of the
+  // block undefined on the air, a longer one cannot be sent.
+  if (sib1_file_name) {
+    const int tbs_bytes = srsran_ra_nbiot_get_sib1_tbs(&mib_nb) / 8;
+    FILE*     sf        = fopen(sib1_file_name, "rb");
+    if (!sf) {
+      fprintf(stderr, "Error: cannot open SIB1-NB file %s\n", sib1_file_name);
+      exit(-1);
+    }
+    size_t n = fread(sib1_file_payload, 1, sizeof(sib1_file_payload), sf);
+    fclose(sf);
+    if (tbs_bytes <= 0 || n != (size_t)tbs_bytes) {
+      fprintf(stderr,
+              "Error: %s is %zu bytes but schedulingInfoSIB1=%d (-t) carries %d bytes; regenerate it with a matching "
+              "nbiot_sib_pack config\n",
+              sib1_file_name,
+              n,
+              mib_nb.sched_info_sib1,
+              tbs_bytes);
+      exit(-1);
+    }
+    sib1_payload     = sib1_file_payload;
+    sib1_payload_len = (uint32_t)n;
+    printf("Broadcasting SIB1-NB from %s (%zu bytes)\n", sib1_file_name, n);
+  }
+
   // Initialize UE DL (used here for SIB1 scheduling helpers); size it for the full LTE grid when in-band
   if (srsran_nbiot_ue_dl_init(&ue_dl, sf_symbols, cell.base.nof_prb, SRSRAN_NBIOT_NUM_RX_ANTENNAS)) {
     fprintf(stderr, "Error initiating UE downlink processing module\n");
@@ -650,7 +687,8 @@ int main(int argc, char** argv)
       // SIB1-NB content
       if (hfn % 4 == 0 && sfn == 0 && sf_idx == 0) {
         // copy captured SIB1
-        memcpy(sib1_nb_payload, dummy_sib1_payload, sizeof(dummy_sib1_payload));
+        memset(sib1_nb_payload, 0, sizeof(sib1_nb_payload));
+        memcpy(sib1_nb_payload, sib1_payload, sib1_payload_len);
 
         // overwrite Hyper Frame Number (HFN), 8 MSB
         uint8_t unpacked_hfn[4 * 8];
@@ -664,7 +702,7 @@ int main(int argc, char** argv)
 
         if (SRSRAN_VERBOSE_ISDEBUG()) {
           printf("SIB1-NB payload: ");
-          srsran_vec_fprint_byte(stdout, sib1_nb_payload, sizeof(dummy_sib1_payload));
+          srsran_vec_fprint_byte(stdout, sib1_nb_payload, sib1_payload_len);
         }
       }
 

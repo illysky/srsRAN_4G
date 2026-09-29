@@ -99,7 +99,9 @@ SRSRAN_API void srsran_npbch_free(srsran_npbch_t* q);
 
 SRSRAN_API int srsran_npbch_set_cell(srsran_npbch_t* q, srsran_nbiot_cell_t cell);
 
-SRSRAN_API void srsran_npbch_mib_pack(uint32_t sfn, uint32_t hfn, srsran_mib_nb_t mib, uint8_t* msg);
+/// Pack a MIB-NB into SRSRAN_MIB_NB_LEN one-bit-per-byte values. NOTE the argument order: hfn first, then sfn (the
+/// declaration used to name them the other way round, which the compiler cannot catch as both are uint32_t).
+SRSRAN_API void srsran_npbch_mib_pack(uint32_t hfn, uint32_t sfn, srsran_mib_nb_t mib, uint8_t* msg);
 
 SRSRAN_API void srsran_npbch_mib_unpack(uint8_t* msg, srsran_mib_nb_t* mib);
 

@@ -57,6 +57,21 @@ else(RF_FOUND)
   target_link_libraries(npdsch_ue srsran_common srsran_phy pthread rrc_asn1)
 endif(RF_FOUND)
 
+#################################################################
+# NB-IoT system information builder (needs libconfig++ to read enb_nbiot.conf)
+#################################################################
+find_package(LibConfig)
+if(LIBCONFIGPP_FOUND)
+  add_library(nbiot_sib_builder STATIC nbiot_sib_builder.cc)
+  target_include_directories(nbiot_sib_builder PUBLIC ${LIBCONFIGPP_INCLUDE_DIR})
+  target_link_libraries(nbiot_sib_builder srsran_common srsran_phy rrc_asn1 ${LIBCONFIGPP_LIBRARIES})
+
+  add_executable(nbiot_sib_pack nbiot_sib_pack.cc)
+  target_link_libraries(nbiot_sib_pack nbiot_sib_builder)
+else(LIBCONFIGPP_FOUND)
+  message(STATUS "libconfig++ not found: nbiot_sib_pack will not be built")
+endif(LIBCONFIGPP_FOUND)
+
 if(SRSGUI_FOUND)
   include_directories(${SRSGUI_INCLUDE_DIRS})
   target_link_libraries(pdsch_ue ${SRSGUI_LIBRARIES})

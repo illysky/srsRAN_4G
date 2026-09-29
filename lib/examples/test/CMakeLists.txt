@@ -108,6 +108,47 @@ foreach(NEG "wrongprb7;-P;7;-I;1" "wrongprb18;-P;18;-I;1" "wrongpci;-P;17;-I;2")
   set_property(TEST npdsch_npdcch_file_inband_neg_${NEG_NAME} APPEND PROPERTY DEPENDS enb_inband)
 endforeach()
 
+########################################################################
+# NB-IoT system information builder: MIB-NB / SIB1-NB from the carrier config
+########################################################################
+if(LIBCONFIGPP_FOUND)
+  add_executable(nbiot_sib_test nbiot_sib_test.cc)
+  target_link_libraries(nbiot_sib_test nbiot_sib_builder)
+  add_test(NAME nbiot_sib COMMAND nbiot_sib_test)
+  set_property(TEST nbiot_sib PROPERTY PASS_REGULAR_EXPRESSION "0 failed")
+
+  # End to end: build SIB1-NB from the carrier config -> broadcast it in-band as IQ -> decode it from the IQ ->
+  # the recovered transport block must be byte-identical to the one that was built.
+  # Remove any leftovers first so the comparison at the end can never pass on a stale file from an earlier run.
+  add_test(NAME nbiot_sib1_clean
+           COMMAND ${CMAKE_COMMAND} -E remove -f /tmp/nbiot_sib1_test.bin /tmp/nbiot_sib1_rx.bin /tmp/enbtest_inband_sib1.bin)
+  add_test(NAME nbiot_sib1_build
+           COMMAND nbiot_sib_pack -c ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_inband.conf -o /tmp/nbiot_sib1_test.bin)
+  set_property(TEST nbiot_sib1_build PROPERTY PASS_REGULAR_EXPRESSION "wrote 26 bytes")
+  set_property(TEST nbiot_sib1_build APPEND PROPERTY DEPENDS nbiot_sib1_clean)
+
+  set(ARG "-o;/tmp/enbtest_inband_sib1.bin;-n;64;-t;0;-N;25;-M;0;-c;1;-p;17;-S;-B;/tmp/nbiot_sib1_test.bin")
+  add_test(NAME enb_inband_sib1
+           COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:npdsch_enodeb> "-DARG=${ARG}" -V -P ${CMAKE_CURRENT_SOURCE_DIR}/iqtests.cmake)
+  set_property(TEST enb_inband_sib1 APPEND PROPERTY DEPENDS nbiot_sib1_build)
+
+  set(ARG "-i;/tmp/enbtest_inband_sib1.bin;-m;64;-t;0;-w;0;-S;-n;25;-M;0;-I;1;-P;17;-k;-D;/tmp/nbiot_sib1_rx.bin")
+  add_test(NAME npdsch_npdcch_file_inband_sib1_dump
+           COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:npdsch_npdcch_file_test> "-DARG=${ARG}" -V -P ${CMAKE_CURRENT_SOURCE_DIR}/iqtests.cmake)
+  set_property(TEST npdsch_npdcch_file_inband_sib1_dump PROPERTY PASS_REGULAR_EXPRESSION "sib1_dumped=1")
+  set_property(TEST npdsch_npdcch_file_inband_sib1_dump APPEND PROPERTY DEPENDS enb_inband_sib1)
+
+  add_test(NAME nbiot_sib1_content_match
+           COMMAND ${CMAKE_COMMAND} -E compare_files /tmp/nbiot_sib1_test.bin /tmp/nbiot_sib1_rx.bin)
+  set_property(TEST nbiot_sib1_content_match APPEND PROPERTY DEPENDS npdsch_npdcch_file_inband_sib1_dump)
+
+  # A SIB1-NB file whose size does not match schedulingInfoSIB1 must be refused, not transmitted truncated/padded.
+  add_test(NAME enb_inband_sib1_wrong_size
+           COMMAND npdsch_enodeb -o /tmp/enbtest_inband_sib1_bad.bin -n 4 -t 3 -N 25 -M 0 -c 1 -p 17 -S -B /tmp/nbiot_sib1_test.bin)
+  set_property(TEST enb_inband_sib1_wrong_size PROPERTY PASS_REGULAR_EXPRESSION "carries 41 bytes")
+  set_property(TEST enb_inband_sib1_wrong_size APPEND PROPERTY DEPENDS nbiot_sib1_build)
+endif(LIBCONFIGPP_FOUND)
+
 # The encoder and decoder share their RE mapping, so the round trip above cannot detect a symmetrically wrong mapping.
 # This check re-derives the expected placement from the specifications with an independent FFT (needs python3+numpy).
 find_program(NBIOT_PYTHON NAMES python3 python)
