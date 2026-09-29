@@ -71,3 +71,59 @@ add_test(NAME npdsch_npdcch_file3
 # Specify test
 set_property(TEST npdsch_npdcch_file3 PROPERTY PASS_REGULAR_EXPRESSION "pkt_ok=5")
 set_property(TEST npdsch_npdcch_file3 APPEND PROPERTY DEPENDS enb2)
+
+########################################################################
+# IN-BAND NB-IoT: NB-IoT anchor PRB 17 inside a 25 PRB LTE carrier (PCI 1),
+# standard LTE sample rates (7.68 MS/s), as in a real srsenb deployment.
+#  -N 25 LTE PRBs, -M 0 inband-samePCI, -c 1 PCI, -p 17 anchor PRB, -S standard rates
+########################################################################
+
+set(ARG "-o;/tmp/enbtest_inband.bin;-n;64;-t;2;-N;25;-M;0;-c;1;-p;17;-S")
+add_test(NAME enb_inband
+         COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:npdsch_enodeb> "-DARG=${ARG}" -V -P ${CMAKE_CURRENT_SOURCE_DIR}/iqtests.cmake)
+
+# SIB1 must be decoded once
+set(ARG "-i;/tmp/enbtest_inband.bin;-m;64;-t;2;-w;0;-S;-n;25;-M;0;-I;1;-P;17;-k")
+add_test(NAME npdsch_npdcch_file_inband_sib1
+         COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:npdsch_npdcch_file_test> "-DARG=${ARG}" -V -P ${CMAKE_CURRENT_SOURCE_DIR}/iqtests.cmake)
+set_property(TEST npdsch_npdcch_file_inband_sib1 PROPERTY PASS_REGULAR_EXPRESSION "pkt_ok=1")
+set_property(TEST npdsch_npdcch_file_inband_sib1 APPEND PROPERTY DEPENDS enb_inband)
+
+# NPDCCH + NPDSCH for the user in every one of the 64 frames
+set(ARG "-i;/tmp/enbtest_inband.bin;-m;64;-t;2;-w;0;-S;-n;25;-M;0;-I;1;-P;17;-r;0x1234")
+add_test(NAME npdsch_npdcch_file_inband_user
+         COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:npdsch_npdcch_file_test> "-DARG=${ARG}" -V -P ${CMAKE_CURRENT_SOURCE_DIR}/iqtests.cmake)
+set_property(TEST npdsch_npdcch_file_inband_user PROPERTY PASS_REGULAR_EXPRESSION "pkt_ok=64")
+set_property(TEST npdsch_npdcch_file_inband_user APPEND PROPERTY DEPENDS enb_inband)
+
+# Negative controls: a decoder looking at the wrong PRB (a far one, and the immediate neighbour, which is where in-band
+# data used to leak) or the wrong PCI must decode nothing. These prove the round trip really depends on the placement.
+foreach(NEG "wrongprb7;-P;7;-I;1" "wrongprb18;-P;18;-I;1" "wrongpci;-P;17;-I;2")
+  list(GET NEG 0 NEG_NAME)
+  list(REMOVE_AT NEG 0)
+  set(ARG "-i;/tmp/enbtest_inband.bin;-m;64;-t;2;-w;0;-S;-n;25;-M;0;-r;0x1234;${NEG}")
+  add_test(NAME npdsch_npdcch_file_inband_neg_${NEG_NAME}
+           COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:npdsch_npdcch_file_test> "-DARG=${ARG}" -V -P ${CMAKE_CURRENT_SOURCE_DIR}/iqtests.cmake)
+  set_property(TEST npdsch_npdcch_file_inband_neg_${NEG_NAME} PROPERTY PASS_REGULAR_EXPRESSION "pkt_ok=0")
+  set_property(TEST npdsch_npdcch_file_inband_neg_${NEG_NAME} APPEND PROPERTY DEPENDS enb_inband)
+endforeach()
+
+# The encoder and decoder share their RE mapping, so the round trip above cannot detect a symmetrically wrong mapping.
+# This check re-derives the expected placement from the specifications with an independent FFT (needs python3+numpy).
+find_program(NBIOT_PYTHON NAMES python3 python)
+set(NBIOT_HAVE_NUMPY FALSE)
+if(NBIOT_PYTHON)
+  execute_process(COMMAND ${NBIOT_PYTHON} -c "import numpy" RESULT_VARIABLE NBIOT_NUMPY_RC OUTPUT_QUIET ERROR_QUIET)
+  if(NBIOT_NUMPY_RC EQUAL 0)
+    set(NBIOT_HAVE_NUMPY TRUE)
+  endif()
+endif()
+if(NBIOT_HAVE_NUMPY)
+  add_test(NAME nbiot_inband_geometry
+           COMMAND ${NBIOT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_inband_geometry.py /tmp/enbtest_inband.bin --prb 17 --pci 1)
+  set_property(TEST nbiot_inband_geometry PROPERTY PASS_REGULAR_EXPRESSION "RESULT: PASS")
+  set_property(TEST nbiot_inband_geometry APPEND PROPERTY DEPENDS enb_inband)
+else()
+  message(WARNING "python3 with numpy not found: the independent in-band geometry test (nbiot_inband_geometry) is NOT "
+                  "registered. The in-band decode round trips alone cannot detect a symmetric RE-mapping error.")
+endif()

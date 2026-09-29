@@ -104,7 +104,7 @@ static int   sf_n_re = 0, sf_n_samples = 0;
 
 void usage(char* prog)
 {
-  printf("Usage: %s [aeOgfostmirnlRpv]\n", prog);
+  printf("Usage: %s [aeOgfostmirnlRpvNMcS]\n", prog);
 #ifndef DISABLE_RF
   printf("\t-a RF args [Default %s]\n", rf_args);
   printf("\t-e RF amplitude [Default %.2f]\n", rf_amp);
@@ -124,13 +124,19 @@ void usage(char* prog)
   printf("\t-l n_id_ncell [Default %d]\n", cell.n_id_ncell);
   printf("\t-R Is R14 cell [Default %s]\n", cell.is_r14 ? "Yes" : "No");
   printf("\t-p NB-IoT PRB id [Default %d]\n", cell.nbiot_prb);
+  printf("\t-N number of PRBs of the LTE carrier the NB-IoT PRB sits in [Default %d]\n", cell.base.nof_prb);
+  printf("\t-M operation mode: 0=inband-samePCI 1=inband-differentPCI 2=guardband 3=standalone [Default %d]\n",
+         cell.mode);
+  printf("\t-c LTE cell id (PCI) of the carrier NB-IoT is deployed in [Default %d]\n", cell.base.id);
+  printf("\t-S use standard LTE sample rates (7.68 MS/s for 25 PRB), as srsenb does with expert.lte_sample_rates\n");
   printf("\t-v [set srsran_verbose to debug, default none]\n");
 }
 
 void parse_args(int argc, char** argv)
 {
   int opt;
-  while ((opt = getopt(argc, argv, "aeOgfostmirnlRpv")) != -1) {
+  bool n_id_ncell_given = false;
+  while ((opt = getopt(argc, argv, "aeOgfostmirnlRpvNMcS")) != -1) {
     switch (opt) {
       case 'a':
         rf_args = argv[optind];
@@ -169,7 +175,26 @@ void parse_args(int argc, char** argv)
         nof_frames = (uint32_t)strtol(argv[optind], NULL, 10);
         break;
       case 'l':
-        cell.n_id_ncell = (uint32_t)strtol(argv[optind], NULL, 10);
+        cell.n_id_ncell   = (uint32_t)strtol(argv[optind], NULL, 10);
+        n_id_ncell_given = true;
+        break;
+      case 'N':
+        cell.base.nof_prb = (uint32_t)strtol(argv[optind], NULL, 10);
+        break;
+      case 'M': {
+        long m = strtol(argv[optind], NULL, 10);
+        if (m < 0 || m >= SRSRAN_NBIOT_MODE_N_ITEMS) {
+          fprintf(stderr, "Error: invalid operation mode %ld\n", m);
+          exit(-1);
+        }
+        cell.mode = (srsran_nbiot_mode_t)m;
+        break;
+      }
+      case 'c':
+        cell.base.id = (uint32_t)strtol(argv[optind], NULL, 10);
+        break;
+      case 'S':
+        srsran_use_standard_symbol_size(true);
         break;
       case 'R':
         cell.is_r14 = !cell.is_r14;
@@ -183,6 +208,28 @@ void parse_args(int argc, char** argv)
       default:
         usage(argv[0]);
         exit(-1);
+    }
+  }
+
+  if (cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI) {
+    // Same-PCI means the NB-IoT cell id *is* the LTE cell id (TS 36.211 10.2.6, and checked again in npdsch.c)
+    if (n_id_ncell_given && cell.n_id_ncell != cell.base.id) {
+      fprintf(stderr,
+              "Error: inband-samePCI needs n_id_ncell (%d) == LTE cell id (%d); drop -l or make them equal\n",
+              cell.n_id_ncell,
+              cell.base.id);
+      exit(-1);
+    }
+    cell.n_id_ncell = cell.base.id;
+
+    // The anchor PRB must be one that eutra-CRS-SequenceInfo can express (TS 36.213 Table 16.8-1)
+    uint8_t info = 0;
+    if (srsran_nbiot_prb_to_crs_seq_info(cell.base.nof_prb, cell.nbiot_prb, &info, NULL) != SRSRAN_SUCCESS) {
+      fprintf(stderr,
+              "Error: PRB %d is not a legal in-band anchor for a %d-PRB LTE carrier (TS 36.213 Table 16.8-1)\n",
+              cell.nbiot_prb,
+              cell.base.nof_prb);
+      exit(-1);
     }
   }
 
@@ -246,7 +293,12 @@ void base_init()
     exit(-1);
   }
   srsran_ofdm_set_normalize(&ifft, true);
-  srsran_ofdm_set_freq_shift(&ifft, -SRSRAN_NBIOT_FREQ_SHIFT_FACTOR);
+  if (cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI || cell.mode == SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI) {
+    // In-band: the NB-IoT PRB is an ordinary LTE PRB, so keep the LTE grid exactly as srsenb generates it (DC
+    // subcarrier skipped, no frequency shift). Anything else would move the anchor PRB off its true position.
+  } else {
+    srsran_ofdm_set_freq_shift(&ifft, -SRSRAN_NBIOT_FREQ_SHIFT_FACTOR);
+  }
 
   if (srsran_npss_synch_init(&npss_sync, sf_n_samples, srsran_symbol_sz(cell.base.nof_prb))) {
     fprintf(stderr, "Error initializing NPSS object\n");
@@ -462,10 +514,14 @@ int main(int argc, char** argv)
   mib_nb.sched_info_sib1 = sched_info_tag;
   mib_nb.sys_info_tag    = 0;
   mib_nb.ac_barring      = false;
-  mib_nb.mode            = SRSRAN_NBIOT_MODE_STANDALONE;
+  mib_nb.mode            = cell.mode;
+  if (cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI) {
+    // tell the UE where in the LTE carrier the anchor PRB is (validated in parse_args)
+    srsran_nbiot_prb_to_crs_seq_info(cell.base.nof_prb, cell.nbiot_prb, &mib_nb.eutra_crs_seq_info, NULL);
+  }
 
-  // Initialize UE DL
-  if (srsran_nbiot_ue_dl_init(&ue_dl, sf_symbols, SRSRAN_NBIOT_MAX_PRB, SRSRAN_NBIOT_NUM_RX_ANTENNAS)) {
+  // Initialize UE DL (used here for SIB1 scheduling helpers); size it for the full LTE grid when in-band
+  if (srsran_nbiot_ue_dl_init(&ue_dl, sf_symbols, cell.base.nof_prb, SRSRAN_NBIOT_NUM_RX_ANTENNAS)) {
     fprintf(stderr, "Error initiating UE downlink processing module\n");
     exit(-1);
   }
@@ -493,7 +549,7 @@ int main(int argc, char** argv)
 #endif
 
   /* Generate CRS+NRS signals */
-  if (srsran_chest_dl_nbiot_init(&ch_est, SRSRAN_NBIOT_MAX_PRB)) {
+  if (srsran_chest_dl_nbiot_init(&ch_est, cell.base.nof_prb)) {
     fprintf(stderr, "Error initializing equalizer\n");
     exit(-1);
   }

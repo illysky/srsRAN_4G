@@ -165,6 +165,10 @@ add_executable(npbch_test npbch_test.c)
 target_link_libraries(npbch_test srsran_phy)
 add_lte_test(npbch_test npbch_test)
 
+add_executable(nbiot_inband_test nbiot_inband_test.c)
+target_link_libraries(nbiot_inband_test srsran_phy)
+add_lte_test(nbiot_inband_test nbiot_inband_test)
+
 add_lte_test(npbch_file_test_r13 npbch_file_test -i ${CMAKE_CURRENT_SOURCE_DIR}/signal_nbiot_amari_nid0_sfn514_sib2.bin)
 add_lte_test(npbch_file_test_r14 npbch_file_test -l 256 -R -r 0 -i ${CMAKE_CURRENT_SOURCE_DIR}/signal_nbiot_nid256_r14_sf0.bin)
 add_lte_test(npbch_file_test_nid257_r13 npbch_file_test -l 257 -r 4 -i ${CMAKE_CURRENT_SOURCE_DIR}/signal_nbiot_nid257_r13_sf0.bin)

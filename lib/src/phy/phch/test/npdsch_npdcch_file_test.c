@@ -61,7 +61,7 @@ cf_t*                buff_ptrs[SRSRAN_MAX_PORTS] = {NULL, NULL, NULL, NULL};
 
 void usage(char* prog)
 {
-  printf("Usage: %s [rovcnwmpstRx] -i input_file\n", prog);
+  printf("Usage: %s [rovcnwmpstRxPMIS] -i input_file\n", prog);
   printf("\t-o DCI format [Default %s]\n", srsran_dci_format_string(dci_format));
   printf("\t-c n_id_ncell [Default %d]\n", cell.n_id_ncell);
   printf("\t-s Start subframe_idx [Default %d]\n", sf_idx);
@@ -74,19 +74,44 @@ void usage(char* prog)
   printf("\t-m max_frames [Default %d]\n", max_frames);
   printf("\t-R Is R14 cell [Default %s]\n", cell.is_r14 ? "Yes" : "No");
   printf("\t-x SNR-10 (apply noise to input file) [Default %f]\n", snr);
+  printf("\t-P NB-IoT PRB index within the LTE carrier [Default %d]\n", cell.nbiot_prb);
+  printf("\t-M operation mode: 0=inband-samePCI 1=inband-differentPCI 2=guardband 3=standalone [Default %d]\n",
+         cell.mode);
+  printf("\t-I LTE cell id (PCI) of the carrier NB-IoT is deployed in [Default %d]\n", cell.base.id);
+  printf("\t-S input uses standard LTE sample rates (7.68 MS/s for 25 PRB), as srsenb does with lte_sample_rates\n");
   printf("\t-v [set srsran_verbose to debug, default none]\n");
 }
 
 void parse_args(int argc, char** argv)
 {
   int opt;
-  while ((opt = getopt(argc, argv, "irovcnmwpkstx")) != -1) {
+  bool n_id_ncell_given = false;
+  while ((opt = getopt(argc, argv, "irovcnmwpkstxPMIS")) != -1) {
     switch (opt) {
       case 'i':
         input_file_name = argv[optind];
         break;
       case 'c':
-        cell.n_id_ncell = (uint32_t)strtol(argv[optind], NULL, 10);
+        cell.n_id_ncell  = (uint32_t)strtol(argv[optind], NULL, 10);
+        n_id_ncell_given = true;
+        break;
+      case 'P':
+        cell.nbiot_prb = (uint32_t)strtol(argv[optind], NULL, 10);
+        break;
+      case 'M': {
+        long m = strtol(argv[optind], NULL, 10);
+        if (m < 0 || m >= SRSRAN_NBIOT_MODE_N_ITEMS) {
+          fprintf(stderr, "Error: invalid operation mode %ld\n", m);
+          exit(-1);
+        }
+        cell.mode = (srsran_nbiot_mode_t)m;
+        break;
+      }
+      case 'I':
+        cell.base.id = (uint32_t)strtol(argv[optind], NULL, 10);
+        break;
+      case 'S':
+        srsran_use_standard_symbol_size(true);
         break;
       case 'R':
         cell.is_r14 = !cell.is_r14;
@@ -137,6 +162,17 @@ void parse_args(int argc, char** argv)
     usage(argv[0]);
     exit(-1);
   }
+
+  if (cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI) {
+    if (n_id_ncell_given && cell.n_id_ncell != cell.base.id) {
+      fprintf(stderr,
+              "Error: inband-samePCI needs n_id_ncell (%d) == LTE cell id (%d); use -I and drop -c\n",
+              cell.n_id_ncell,
+              cell.base.id);
+      exit(-1);
+    }
+    cell.n_id_ncell = cell.base.id;
+  }
 }
 
 int base_init()
@@ -153,7 +189,8 @@ int base_init()
     exit(-1);
   }
 
-  if (srsran_nbiot_ue_dl_init(&ue_dl, buff_ptrs, SRSRAN_NBIOT_MAX_PRB, SRSRAN_NBIOT_NUM_RX_ANTENNAS)) {
+  // For in-band the whole LTE carrier is demodulated, so the grid has to be sized for it
+  if (srsran_nbiot_ue_dl_init(&ue_dl, buff_ptrs, cell.base.nof_prb, SRSRAN_NBIOT_NUM_RX_ANTENNAS)) {
     fprintf(stderr, "Error initializing UE DL\n");
     return -1;
   }
