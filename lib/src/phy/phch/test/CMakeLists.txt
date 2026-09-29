@@ -169,6 +169,32 @@ add_executable(nbiot_inband_test nbiot_inband_test.c)
 target_link_libraries(nbiot_inband_test srsran_phy)
 add_lte_test(nbiot_inband_test nbiot_inband_test)
 
+########################################################################
+# NPRACH generator / detector
+########################################################################
+
+add_executable(nprach_test nprach_test.c)
+target_link_libraries(nprach_test srsran_phy)
+add_lte_test(nprach_test nprach_test)
+
+# Independent check of the hopping and the baseband waveform against a Python model written from the specification
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  # (generator expressions are only expanded by the NAME ... COMMAND signature of add_test)
+  add_test(NAME nprach_python_reference
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nprach_ref_check.py $<TARGET_FILE:nprach_test>)
+  set_tests_properties(nprach_python_reference PROPERTIES LABELS "lib;phy;phch")
+endif()
+
+# Third party NPRACH test vectors (only if a checkout of Pk8598/NPRACH_DETECTOR is available)
+set(NPRACH_VECTORS_DIR "$ENV{HOME}/src/reference/NPRACH_DETECTOR" CACHE PATH "checkout of Pk8598/NPRACH_DETECTOR")
+add_executable(nprach_vectors_test nprach_vectors_test.c)
+target_link_libraries(nprach_vectors_test srsran_phy)
+if(EXISTS "${NPRACH_VECTORS_DIR}/Test_Data/CVA_3")
+  add_lte_test(nprach_vectors_prm0 nprach_vectors_test ${NPRACH_VECTORS_DIR} 0 1 100)
+  add_lte_test(nprach_vectors_prm1 nprach_vectors_test ${NPRACH_VECTORS_DIR} 1 1 100)
+endif()
+
 add_lte_test(npbch_file_test_r13 npbch_file_test -i ${CMAKE_CURRENT_SOURCE_DIR}/signal_nbiot_amari_nid0_sfn514_sib2.bin)
 add_lte_test(npbch_file_test_r14 npbch_file_test -l 256 -R -r 0 -i ${CMAKE_CURRENT_SOURCE_DIR}/signal_nbiot_nid256_r14_sf0.bin)
 add_lte_test(npbch_file_test_nid257_r13 npbch_file_test -l 257 -r 4 -i ${CMAKE_CURRENT_SOURCE_DIR}/signal_nbiot_nid257_r13_sf0.bin)
