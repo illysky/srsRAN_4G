@@ -78,6 +78,20 @@ def one(exe, cfg, tbs, snr_db, cfo_hz, phase, delay, rng, rx_override=None, extr
             "iters": int(res["iters"]), "err": err}
 
 
+def trials(exe, cfg, tbs, snr_db, cfo_hz, n, rng, extra=()):
+    """One transport block, coded once; n independent noise realisations (and static phase). Returns the number of
+    correct decodes."""
+    tb = rng.integers(0, 2, tbs).tolist()
+    tx = R.transmit(tb, cfg)["samples"]
+    want = "".join(map(str, tb))
+    good = 0
+    for _ in range(n):
+        y = channel(tx, cfg, snr_db, cfo_hz, float(rng.uniform(-3, 3)), 0, rng)
+        res, _ = run_rx(exe, cfg, y, tbs, extra)
+        good += 1 if (res is not None and res["crc_ok"] == "1" and res.get("tb") == want) else 0
+    return good
+
+
 def base_cfg(**kw):
     c = dict(n_sc=1, spacing=15000, sc=0, n_ru=1, n_rep=1, rnti=0x1234, cell_id=1, frame=0, slot=0, rv=0, qm=2)
     c.update(kw)
@@ -164,24 +178,91 @@ def main():
         report("12 tones 15 kHz, timing offset %+d samples" % delay, one(exe, cfg12, 88, 15.0, 0.0, 0.3, delay, rng))
     for delay in (-8, 8):
         report("1 tone 3.75 kHz, timing offset %+d samples" % delay, one(exe, cfg375, 32, 15.0, 0.0, 0.3, delay, rng))
-    print("repetitions combine below the SNR of a single transmission (10 blocks each)")
-
-    def combine(name, mk, tbs, snr, reps, cfo):
-        good = sum(one(exe, mk(reps), tbs, snr, cfo, float(rng.uniform(-3, 3)), 0, rng)["ok"] for _ in range(10))
-        return good
-
-    for name, mk, tbs, snr, reps in (
-            ("1 tone 15 kHz", lambda r: base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=r, cell_id=21), 32, -7.0, 8),
-            ("1 tone 3.75 kHz", lambda r: base_cfg(n_sc=1, spacing=3750, sc=20, n_ru=1, n_rep=r, cell_id=21), 32, -4.0, 4),
-            ("3 tones", lambda r: base_cfg(n_sc=3, sc=3, n_ru=2, n_rep=r, cell_id=21), 88, -4.0, 4),
-            ("12 tones", lambda r: base_cfg(n_sc=12, sc=0, n_ru=1, n_rep=r, cell_id=21), 88, -4.0, 8)):
-        many = combine(name, mk, tbs, snr, reps, 15.0)
-        single = combine(name, mk, tbs, snr, 1, 15.0)
+    print("near the decoding threshold: 20 noise realisations each, about 1.5 dB above the 50% point")
+    # (description, config, tbs, SNR per tone, repetitions of the many-repetition case)
+    points = (
+        ("1 tone 15 kHz QPSK, 8 rep", lambda r: base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=r, cell_id=21), 32, -8.0, 8),
+        ("1 tone 15 kHz BPSK, 4 rep", lambda r: base_cfg(n_sc=1, sc=3, n_ru=2, n_rep=r, qm=1, cell_id=21), 32, -8.0, 4),
+        ("1 tone 3.75 kHz BPSK, 4 rep", lambda r: base_cfg(n_sc=1, spacing=3750, sc=3, n_ru=2, n_rep=r, qm=1, cell_id=21), 32, -9.0, 4),
+        ("1 tone 3.75 kHz QPSK, 4 rep", lambda r: base_cfg(n_sc=1, spacing=3750, sc=20, n_ru=1, n_rep=r, cell_id=21), 32, -5.0, 4),
+        ("3 tones, 2 RU, 4 rep", lambda r: base_cfg(n_sc=3, sc=3, n_ru=2, n_rep=r, cell_id=21), 88, -7.0, 4),
+        ("6 tones, 2 RU, rv 2, 4 rep", lambda r: base_cfg(n_sc=6, sc=6, n_ru=2, n_rep=r, cell_id=21, rv=2), 88, -7.0, 4),
+        ("12 tones, 1 RU, 8 rep", lambda r: base_cfg(n_sc=12, sc=0, n_ru=1, n_rep=r, cell_id=21), 88, -6.0, 8),
+    )
+    for name, mk, tbs, snr, reps in points:
+        many = trials(exe, mk(reps), tbs, snr, 15.0, 20, rng)
+        single = trials(exe, mk(1), tbs, snr, 15.0, 4, rng)
         total += 1
-        good = many >= 9 and single <= 1
+        good = many >= 15 and single == 0
         failures += 0 if good else 1
-        print("%-4s %-46s %d/10 blocks with %d repetitions, %d/10 with one, at %+.0f dB" %
+        print("%-4s %-46s %2d/20 with %d repetitions, %d/4 with one, at %+.0f dB" %
               ("ok" if good else "FAIL", name, many, reps, single, snr))
+    print("large frequency offsets (they matter for the rotation of the channel estimate within a slot)")
+    for name, cfg, cfo in (("1 tone 15 kHz, CFO -700 Hz", base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=2, cell_id=21), -700.0),
+                           ("1 tone 15 kHz, CFO +700 Hz", base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=2, cell_id=21), 700.0),
+                           ("1 tone 3.75 kHz, CFO -220 Hz", base_cfg(n_sc=1, spacing=3750, sc=3, n_ru=1, n_rep=2, cell_id=21), -220.0),
+                           ("1 tone 3.75 kHz, CFO +220 Hz", base_cfg(n_sc=1, spacing=3750, sc=3, n_ru=1, n_rep=2, cell_id=21), 220.0),
+                           ("12 tones 15 kHz, CFO +700 Hz", base_cfg(n_sc=12, sc=0, n_ru=1, n_rep=2, cell_id=21), 700.0)):
+        report(name, one(exe, cfg, 32 if cfg["n_sc"] == 1 else 88, 12.0, cfo, 0.4, 0, rng))
+    print("estimators")
+    # the reported SNR must stay close to the truth at high SNR even at the edge of the timing window, where a
+    # window that starts too late would pick up the next symbol
+    for name, cfg, delay in (("1 tone 15 kHz, 30 dB, early by 4 samples", base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=2, cell_id=21), -4),
+                             ("1 tone 15 kHz, 30 dB, late by 5 samples", base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=2, cell_id=21), 5),
+                             ("1 tone 3.75 kHz, 30 dB, early by 8 samples", base_cfg(n_sc=1, spacing=3750, sc=3, n_ru=1, n_rep=2, cell_id=21), -8)):
+        r = one(exe, cfg, 32, 30.0, 0.0, 0.2, delay, rng)
+        total += 1
+        good = r["ok"] and r["snr"] >= 26.0
+        failures += 0 if good else 1
+        print("%-4s %-46s reported %.1f dB (true 30)" % ("ok" if good else "FAIL", name, r.get("snr", float("nan"))))
+    # a short window leaves 1 - 1/W of the noise in the residual; the estimate has to correct for it
+    cfg = base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=8, cell_id=21)
+    r = one(exe, cfg, 32, 12.0, 10.0, 0.2, 0, rng, extra=("win=2",))
+    total += 1
+    good = r["ok"] and 10.5 <= r["snr"] <= 13.5
+    failures += 0 if good else 1
+    print("%-4s %-46s reported %.1f dB (true 12)" % ("ok" if good else "FAIL", "SNR estimate with a 2 slot window", r.get("snr", float("nan"))))
+    print("high code rate (no redundancy to hide errors), 25 dB per tone, frequency, phase and timing offsets")
+    hard = (
+        ("1 tone 15 kHz QPSK, CFO +700 Hz", base_cfg(n_sc=1, sc=3, n_ru=1, cell_id=21), 104, 700.0),
+        ("1 tone 15 kHz QPSK, CFO -700 Hz", base_cfg(n_sc=1, sc=9, n_ru=1, cell_id=22), 104, -700.0),
+        ("1 tone 15 kHz BPSK, CFO +500 Hz", base_cfg(n_sc=1, sc=1, n_ru=2, qm=1, cell_id=23), 104, 500.0),
+        ("1 tone 3.75 kHz QPSK, CFO +220 Hz", base_cfg(n_sc=1, spacing=3750, sc=3, n_ru=1, cell_id=24), 104, 220.0),
+        ("1 tone 3.75 kHz BPSK, CFO -220 Hz", base_cfg(n_sc=1, spacing=3750, sc=30, n_ru=2, qm=1, cell_id=25), 104, -220.0),
+        ("3 tones, CFO +500 Hz", base_cfg(n_sc=3, sc=3, n_ru=1, cell_id=26), 144, 500.0),
+        ("6 tones, CFO -500 Hz", base_cfg(n_sc=6, sc=0, n_ru=1, cell_id=27), 144, -500.0),
+        ("12 tones, CFO +700 Hz", base_cfg(n_sc=12, sc=0, n_ru=1, cell_id=28), 144, 700.0),
+        ("group hopping 15 kHz, 2 RU, CFO +300 Hz",
+         base_cfg(n_sc=1, sc=4, n_ru=2, group_hopping=True, delta_ss=5, slot=6, frame=77, cell_id=200), 208, 300.0),
+        ("group hopping 15 kHz, 2 RU, frame 3 slot 13",
+         base_cfg(n_sc=1, sc=4, n_ru=2, group_hopping=True, delta_ss=3, slot=13, frame=3, cell_id=333), 208, -300.0),
+        ("group hopping 3.75 kHz, 1 RU",
+         base_cfg(n_sc=1, spacing=3750, sc=4, n_ru=1, group_hopping=True, delta_ss=11, slot=2, frame=3, cell_id=17), 104, 100.0),
+        ("group hopping 3.75 kHz, 2 RU, frame 1 slot 4",
+         base_cfg(n_sc=1, spacing=3750, sc=4, n_ru=2, qm=1, group_hopping=True, delta_ss=2, slot=4, frame=1, cell_id=444), 104, -100.0),
+    )
+    for name, cfg, tbs, cfo in hard:
+        report(name, one(exe, cfg, tbs, 25.0, cfo, float(rng.uniform(-3, 3)), int(rng.integers(-2, 3)), rng))
+    print("group hopping with a 2 slot channel estimate window (a wrong reference can not be averaged away)")
+    for name, cfg in (("group hopping 15 kHz, 2 RU", base_cfg(n_sc=1, sc=4, n_ru=2, group_hopping=True, delta_ss=5, slot=6, frame=77, cell_id=200)),
+                      ("group hopping 3.75 kHz, 2 RU", base_cfg(n_sc=1, spacing=3750, sc=4, n_ru=1, n_rep=2, group_hopping=True, delta_ss=11, slot=3, frame=2, cell_id=17))):
+        report(name, one(exe, cfg, 24, 20.0, 5.0, 0.3, 0, rng, extra=("win=2",)))
+    print("frequency offset accuracy at half a periodogram bin (7.8 Hz bins for 32 slots at 15 kHz)")
+    cfg = base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=2, cell_id=21)
+    for cfo in (3.9, 35.2, -27.3):
+        r = one(exe, cfg, 32, 25.0, cfo, 0.2, 0, rng)
+        total += 1
+        good = r["ok"] and abs(r["cfo"] - cfo) <= 2.0
+        failures += 0 if good else 1
+        print("%-4s %-46s reported %.1f Hz" % ("ok" if good else "FAIL", "CFO %+.1f Hz" % cfo, r.get("cfo", float("nan"))))
+    print("timing window at very high SNR: early arrival leaves a next-symbol contribution of d/N of the amplitude")
+    for name, cfg, delay in (("1 tone 15 kHz, 55 dB, early by 4 samples", base_cfg(n_sc=1, sc=3, n_ru=1, n_rep=2, cell_id=21), -4),
+                             ("1 tone 3.75 kHz, 55 dB, early by 8 samples", base_cfg(n_sc=1, spacing=3750, sc=3, n_ru=1, n_rep=2, cell_id=21), -8)):
+        r = one(exe, cfg, 32, 55.0, 0.0, 0.2, delay, rng)
+        total += 1
+        good = r["ok"] and r["snr"] >= 45.0
+        failures += 0 if good else 1
+        print("%-4s %-46s reported %.1f dB (true 55)" % ("ok" if good else "FAIL", name, r.get("snr", float("nan"))))
     print("negative controls")
     cfg = base_cfg(n_sc=6, sc=0, n_ru=2, cell_id=9)
     report("wrong RNTI is rejected", one(exe, cfg, 88, None, 0.0, 0.0, 0, rng, rx_override={"rnti": 0x1235}), want=False)
