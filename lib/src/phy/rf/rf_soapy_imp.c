@@ -74,6 +74,14 @@ typedef struct {
   uint32_t num_underflows;
   uint32_t num_other_errors;
   uint32_t num_stream_curruption;
+
+  // Pinned antenna paths (re-applied after every setFrequency, since some
+  // drivers e.g. LimeSuite auto-select an RF path on retune and silently
+  // override any antenna chosen at device construction time).
+  char rx_ant_str[64];
+  char tx_ant_str[64];
+  bool has_rx_ant_pin;
+  bool has_tx_ant_pin;
 } rf_soapy_handler_t;
 
 cf_t zero_mem[64 * 1024];
@@ -536,12 +544,22 @@ int rf_soapy_open_multi(char* args, void** h, uint32_t num_requested_channels)
     printf(" - %s: %.2f dB\n", list[i], SoapySDRDevice_getGainElement(handler->device, SOAPY_SDR_TX, 0, list[i]));
   }
 
-  // print actual antenna configuration
+  // print actual antenna configuration, and remember it so we can re-pin it
+  // after every setFrequency() call below (some drivers, e.g. LimeSuite,
+  // auto-select an RF path on retune and silently override this).
   char* ant = SoapySDRDevice_getAntenna(handler->device, SOAPY_SDR_RX, 0);
   printf("Rx antenna set to %s\n", ant);
+  if (ant) {
+    copy_subdev_string(handler->rx_ant_str, ant);
+    handler->has_rx_ant_pin = true;
+  }
 
   ant = SoapySDRDevice_getAntenna(handler->device, SOAPY_SDR_TX, 0);
   printf("Tx antenna set to %s\n", ant);
+  if (ant) {
+    copy_subdev_string(handler->tx_ant_str, ant);
+    handler->has_tx_ant_pin = true;
+  }
 
 #if HAVE_ASYNC_THREAD
   if (start_async_thread) {
@@ -769,6 +787,14 @@ double rf_soapy_set_rx_freq(void* h, uint32_t ch, double freq)
       printf("setFrequency fail: %s\n", SoapySDRDevice_lastError());
       return SRSRAN_ERROR;
     }
+    // Some drivers (e.g. LimeSuite) auto-select an RF path based on the new
+    // frequency, silently overriding any antenna pinned at construction
+    // time. Re-assert it here so the pin actually sticks.
+    if (handler->has_rx_ant_pin) {
+      if (SoapySDRDevice_setAntenna(handler->device, SOAPY_SDR_RX, i, handler->rx_ant_str) != 0) {
+        ERROR("Failed to re-pin Rx antenna for channel %d after retune.", i);
+      }
+    }
   }
 
   // wait until LO is locked
@@ -785,6 +811,12 @@ double rf_soapy_set_tx_freq(void* h, uint32_t ch, double freq)
     if (SoapySDRDevice_setFrequency(handler->device, SOAPY_SDR_TX, i, freq, NULL) != 0) {
       printf("setFrequency fail: %s\n", SoapySDRDevice_lastError());
       return SRSRAN_ERROR;
+    }
+    // See comment in rf_soapy_set_rx_freq(): re-pin the antenna after retune.
+    if (handler->has_tx_ant_pin) {
+      if (SoapySDRDevice_setAntenna(handler->device, SOAPY_SDR_TX, i, handler->tx_ant_str) != 0) {
+        ERROR("Failed to re-pin Tx antenna for channel %d after retune.", i);
+      }
     }
   }
   return SoapySDRDevice_getFrequency(handler->device, SOAPY_SDR_TX, 0);
