@@ -190,6 +190,15 @@ endif()
 set(NPRACH_VECTORS_DIR "$ENV{HOME}/src/reference/NPRACH_DETECTOR" CACHE PATH "checkout of Pk8598/NPRACH_DETECTOR")
 add_executable(nprach_vectors_test nprach_vectors_test.c)
 target_link_libraries(nprach_vectors_test srsran_phy)
+# NPUSCH: the independent Python model against the library's coding blocks
+add_executable(npusch_fec_dump npusch_fec_dump.c)
+target_link_libraries(npusch_fec_dump srsran_phy)
+if(Python3_FOUND)
+  add_test(NAME npusch_python_coding
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npusch_ref_check.py $<TARGET_FILE:npusch_fec_dump>)
+  set_tests_properties(npusch_python_coding PROPERTIES LABELS "lib;phy;phch")
+endif()
+
 if(EXISTS "${NPRACH_VECTORS_DIR}/Test_Data/CVA_3")
   add_lte_test(nprach_vectors_prm0 nprach_vectors_test ${NPRACH_VECTORS_DIR} 0 1 100)
   add_lte_test(nprach_vectors_prm1 nprach_vectors_test ${NPRACH_VECTORS_DIR} 1 1 100)
