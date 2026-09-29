@@ -819,10 +819,88 @@ uint32_t srsran_print_check(char* s, size_t max_len, uint32_t cur_len, const cha
 
 bool srsran_nbiot_prb_isvalid(srsran_nbiot_cell_t* cell)
 {
-  if (cell->nbiot_prb <= cell->base.nof_prb) {
+  // PRB indices are zero-based, so nbiot_prb == nof_prb would be one past the carrier
+  if (cell->nbiot_prb < cell->base.nof_prb) {
     return true;
   }
   return false;
+}
+
+/*
+ * TS 36.213 Table 16.8-1. The table gives an "E-UTRA PRB index" n'_PRB that is an offset from the middle of the LTE
+ * carrier: n'_PRB = n_PRB - floor(N_RB/2) for odd N_RB, n'_PRB = n_PRB - N_RB/2 for even N_RB. For a given N_RB
+ * parity, each eutra-CRS-SequenceInfo value maps to exactly one offset and (implicitly) one channel raster offset.
+ */
+static const int8_t nbiot_crs_seq_odd[14] = {-35, -30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30, 35};
+static const int8_t nbiot_crs_seq_even[18] =
+    {-46, -41, -36, -31, -26, -21, -16, -11, -6, 5, 10, 15, 20, 25, 30, 35, 40, 45};
+
+// Odd table: infos 0..13. Even table: infos 14..31. Raster offset per the table's grouping.
+static srsran_nbiot_raster_offset_t nbiot_crs_seq_raster(uint8_t info)
+{
+  if (info <= 6) {
+    return SRSRAN_NBIOT_RASTER_OFFSET_M7DOT5_KHZ;
+  } else if (info <= 13) {
+    return SRSRAN_NBIOT_RASTER_OFFSET_P7DOT5_KHZ;
+  } else if (info <= 22) {
+    return SRSRAN_NBIOT_RASTER_OFFSET_P2DOT5_KHZ;
+  }
+  return SRSRAN_NBIOT_RASTER_OFFSET_M2DOT5_KHZ;
+}
+
+int srsran_nbiot_crs_seq_info_to_prb(uint32_t                      lte_nof_prb,
+                                     uint8_t                       info,
+                                     uint32_t*                     nbiot_prb,
+                                     srsran_nbiot_raster_offset_t* raster_offset)
+{
+  if (info > 31 || nbiot_prb == NULL || !srsran_nofprb_isvalid(lte_nof_prb)) {
+    return SRSRAN_ERROR;
+  }
+
+  const bool odd = (lte_nof_prb % 2) == 1;
+  int        n_prime;
+  if (odd) {
+    if (info > 13) {
+      return SRSRAN_ERROR; // infos 14..31 are defined for even N_RB only
+    }
+    n_prime = nbiot_crs_seq_odd[info];
+  } else {
+    if (info < 14) {
+      return SRSRAN_ERROR; // infos 0..13 are defined for odd N_RB only
+    }
+    n_prime = nbiot_crs_seq_even[info - 14];
+  }
+
+  const int prb = n_prime + (int)(lte_nof_prb / 2); // integer division is floor(N_RB/2) for odd, N_RB/2 for even
+  if (prb < 0 || prb >= (int)lte_nof_prb) {
+    return SRSRAN_ERROR;
+  }
+
+  *nbiot_prb = (uint32_t)prb;
+  if (raster_offset) {
+    *raster_offset = nbiot_crs_seq_raster(info);
+  }
+  return SRSRAN_SUCCESS;
+}
+
+int srsran_nbiot_prb_to_crs_seq_info(uint32_t                      lte_nof_prb,
+                                     uint32_t                      nbiot_prb,
+                                     uint8_t*                      info,
+                                     srsran_nbiot_raster_offset_t* raster_offset)
+{
+  if (info == NULL) {
+    return SRSRAN_ERROR;
+  }
+  const uint8_t first = (lte_nof_prb % 2) ? 0 : 14;
+  const uint8_t last  = (lte_nof_prb % 2) ? 13 : 31;
+  for (uint8_t i = first; i <= last; i++) {
+    uint32_t prb;
+    if (srsran_nbiot_crs_seq_info_to_prb(lte_nof_prb, i, &prb, raster_offset) == SRSRAN_SUCCESS && prb == nbiot_prb) {
+      *info = i;
+      return SRSRAN_SUCCESS;
+    }
+  }
+  return SRSRAN_ERROR;
 }
 
 bool srsran_nbiot_cell_isvalid(srsran_nbiot_cell_t* cell)

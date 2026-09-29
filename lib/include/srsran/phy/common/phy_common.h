@@ -377,6 +377,40 @@ typedef struct SRSRAN_API {
 
 ///< PHY common function declarations
 
+/**
+ * ChannelRasterOffset-NB-r13 (TS 36.331): offset of the NB-IoT anchor carrier from the 100 kHz raster.
+ * The numeric values are the ASN.1 enumeration indices, so they can be packed into MIB-NB directly.
+ */
+typedef enum {
+  SRSRAN_NBIOT_RASTER_OFFSET_M7DOT5_KHZ = 0,
+  SRSRAN_NBIOT_RASTER_OFFSET_M2DOT5_KHZ = 1,
+  SRSRAN_NBIOT_RASTER_OFFSET_P2DOT5_KHZ = 2,
+  SRSRAN_NBIOT_RASTER_OFFSET_P7DOT5_KHZ = 3,
+} srsran_nbiot_raster_offset_t;
+
+/**
+ * Maps an in-band anchor PRB to eutra-CRS-SequenceInfo-r13 (TS 36.213 Table 16.8-1).
+ *
+ * @param lte_nof_prb   Number of PRBs of the LTE carrier (6, 15, 25, 50, 75, 100)
+ * @param nbiot_prb     PRB index of the NB-IoT anchor within the LTE carrier
+ * @param info          Returns the eutra-CRS-SequenceInfo value (0..31)
+ * @param raster_offset Returns the implied raster offset (may be NULL)
+ * @return SRSRAN_SUCCESS, or SRSRAN_ERROR if the PRB is not a legal anchor for that bandwidth
+ */
+SRSRAN_API int srsran_nbiot_prb_to_crs_seq_info(uint32_t                      lte_nof_prb,
+                                                uint32_t                      nbiot_prb,
+                                                uint8_t*                      info,
+                                                srsran_nbiot_raster_offset_t* raster_offset);
+
+/**
+ * Inverse of srsran_nbiot_prb_to_crs_seq_info(): finds the anchor PRB signalled by eutra-CRS-SequenceInfo-r13.
+ * Returns SRSRAN_ERROR if the value does not correspond to a PRB inside the LTE carrier.
+ */
+SRSRAN_API int srsran_nbiot_crs_seq_info_to_prb(uint32_t                      lte_nof_prb,
+                                                uint8_t                       info,
+                                                uint32_t*                     nbiot_prb,
+                                                srsran_nbiot_raster_offset_t* raster_offset);
+
 SRSRAN_API bool srsran_cell_isvalid(srsran_cell_t* cell);
 
 SRSRAN_API void srsran_cell_fprint(FILE* stream, srsran_cell_t* cell, uint32_t sfn);
@@ -498,6 +532,7 @@ SRSRAN_API uint32_t srsran_tti_interval(uint32_t tti1, uint32_t tti2);
 SRSRAN_API uint32_t srsran_print_check(char* s, size_t max_len, uint32_t cur_len, const char* format, ...);
 
 SRSRAN_API bool  srsran_nbiot_cell_isvalid(srsran_nbiot_cell_t* cell);
+SRSRAN_API bool  srsran_nbiot_prb_isvalid(srsran_nbiot_cell_t* cell);
 SRSRAN_API bool  srsran_nbiot_portid_isvalid(uint32_t port_id);
 SRSRAN_API float srsran_band_fu_nbiot(uint32_t ul_earfcn, const float m_ul);
 

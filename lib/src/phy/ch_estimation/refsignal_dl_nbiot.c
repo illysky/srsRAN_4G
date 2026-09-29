@@ -85,7 +85,11 @@ inline uint32_t srsran_nbiot_refsignal_dl_nsymbol(uint32_t l, srsran_cp_t cp, ui
 
 inline uint32_t srsran_refsignal_nbiot_cs_nof_re(srsran_nbiot_cell_t* cell, uint32_t port_id)
 {
-  return srsran_refsignal_cs_nof_symbols(NULL, NULL, port_id) * cell->base.nof_prb * 2; // 2 RE per PRB
+  // NRS are transmitted in the single NB-IoT PRB only (2 RE per symbol), irrespective of how wide the surrounding
+  // LTE carrier is for in-band operation. (This used to scale with cell->base.nof_prb, which is the LTE CRS rule and
+  // made the estimator read far past the 1-PRB pilot buffers as soon as an in-band cell had more than one PRB.)
+  (void)cell;
+  return srsran_refsignal_cs_nof_symbols(NULL, NULL, port_id) * 2;
 }
 
 /** Allocates and precomputes the Narrowband Reference Signal (NRS) signal for

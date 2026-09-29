@@ -612,9 +612,13 @@ int srsran_npdcch_cp(srsran_npdcch_t* q, cf_t* input, cf_t* output, bool put, sr
     skip_crs = true;
   }
 
+  // REs between the end of the NB-IoT PRB in one OFDM symbol and its start in the next: zero for a grid that is just
+  // the NB-IoT PRB, (nof_prb - 1) * 12 for in-band operation inside a wider LTE carrier (see npdsch.c)
+  const uint32_t row_skip = (q->cell.base.nof_prb - 1) * SRSRAN_NRE;
+
   // start mapping at specified OFDM symbol
   for (int l = q->i_n_start; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
-    uint32_t delta  = (q->cell.base.nof_prb - 1) * SRSRAN_NRE; // the number of REs skipped in each OFDM symbol
+    uint32_t delta  = 0; // alignment fix-up after a reference-signal-aware copy (0 or 1)
     uint32_t offset = 0; // the number of REs left out before start of the REF signal RE
     if (l == 5 || l == 6 || l == 12 || l == 13) {
       // always skip NRS
@@ -749,9 +753,9 @@ int srsran_npdcch_cp(srsran_npdcch_t* q, cf_t* input, cf_t* output, bool put, sr
     }
 
     if (put) {
-      out_ptr += delta;
+      out_ptr += delta + row_skip;
     } else {
-      in_ptr += delta;
+      in_ptr += delta + row_skip;
     }
 
 #if RE_EXT_DEBUG

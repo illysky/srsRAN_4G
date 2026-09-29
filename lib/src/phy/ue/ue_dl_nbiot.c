@@ -52,7 +52,12 @@ int srsran_nbiot_ue_dl_init(srsran_nbiot_ue_dl_t* q,
     q->bits_total    = 0;
     q->sample_offset = 0;
     q->mib_set       = false;
-    q->nof_re        = SRSRAN_SF_LEN_RE(SRSRAN_NBIOT_MAX_PRB, SRSRAN_CP_NORM);
+    // Size all RE buffers for the widest grid we will be asked to handle. A real NB-IoT UE only ever sees the single
+    // narrowband PRB (max_prb == SRSRAN_NBIOT_MAX_PRB), but for in-band operation the same object is also used to
+    // demodulate the entire LTE carrier (e.g. 25 PRBs) so the NB-IoT PRB can be located inside it.
+    // (SRSRAN_SF_LEN_RE does not parenthesise its argument, hence the local variable.)
+    const uint32_t grid_prb = (max_prb > 0) ? max_prb : SRSRAN_NBIOT_MAX_PRB;
+    q->nof_re               = SRSRAN_SF_LEN_RE(grid_prb, SRSRAN_CP_NORM);
 
     // for transmissions using only single subframe
     q->sf_symbols = srsran_vec_cf_malloc(q->nof_re);
@@ -187,6 +192,13 @@ int srsran_nbiot_ue_dl_set_cell(srsran_nbiot_ue_dl_t* q, srsran_nbiot_cell_t cel
 
     if (q->cell.n_id_ncell != cell.n_id_ncell || q->cell.base.nof_prb == 0) {
       q->cell = cell;
+
+      // Standalone/guard-band signals are generated on a 12 contiguous-subcarrier grid shifted by half a subcarrier.
+      // In-band signals live on the ordinary LTE grid (DC subcarrier skipped, no shift), so the shift must be off or
+      // the anchor PRB would be demodulated half a subcarrier away from where it was transmitted.
+      const bool inband = cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI ||
+                          cell.mode == SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI;
+      srsran_ofdm_set_freq_shift(&q->fft, inband ? 0.0f : SRSRAN_NBIOT_FREQ_SHIFT_FACTOR);
 
       if (srsran_chest_dl_nbiot_set_cell(&q->chest, q->cell)) {
         fprintf(stderr, "Error setting channel estimator's cell configuration\n");

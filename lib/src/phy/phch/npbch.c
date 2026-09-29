@@ -217,10 +217,29 @@ void srsran_npbch_mib_pack(uint32_t hfn, uint32_t sfn, srsran_mib_nb_t mib, uint
   // access barring enabled, 1 bit
   srsran_bit_unpack(mib.ac_barring, &msg, 1);
 
-  // operation mode info, 2 for mode + 5 for config, 7 bits in total
+  // operation mode info, 2 for mode + 5 for config, 7 bits in total (TS 36.331 6.7.3.1: choice index, then the
+  // selected alternative). Spare bits stay zero from the bzero() above.
   srsran_bit_unpack(mib.mode, &msg, 2);
+  switch (mib.mode) {
+    case SRSRAN_NBIOT_MODE_INBAND_SAME_PCI:
+      // Inband-SamePCI-NB-r13: eutra-CRS-SequenceInfo INTEGER (0..31)
+      srsran_bit_unpack(mib.eutra_crs_seq_info, &msg, 5);
+      break;
+    case SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI:
+      // Inband-DifferentPCI-NB-r13: eutra-NumCRS-Ports (1 bit), rasterOffset (2 bits), spare (2 bits)
+      srsran_bit_unpack(mib.eutra_num_crs_ports_four ? 1 : 0, &msg, 1);
+      srsran_bit_unpack(mib.raster_offset, &msg, 2);
+      break;
+    case SRSRAN_NBIOT_MODE_GUARDBAND:
+      // Guardband-NB-r13: rasterOffset (2 bits), spare (3 bits)
+      srsran_bit_unpack(mib.raster_offset, &msg, 2);
+      break;
+    default:
+      // Standalone-NB-r13: 5 spare bits
+      break;
+  }
 
-  // 11 spare bits
+  // remaining bits are spare (r15 additionalTransmissionSIB1, r16 ab-Enabled-5GC, r17 partEARFCN, spare)
 }
 
 /** Unpacks MIB-NB from NPBCH message.
@@ -234,7 +253,25 @@ void srsran_npbch_mib_unpack(uint8_t* msg, srsran_mib_nb_t* mib)
     mib->sched_info_sib1 = srsran_bit_pack(&msg, 4) & 0x0000ffff;
     mib->sys_info_tag    = srsran_bit_pack(&msg, 5) & 0x0001ffff;
     mib->ac_barring      = srsran_bit_pack(&msg, 1) & 0x1;
-    mib->mode            = srsran_bit_pack(&msg, 2) & 0x0000000B;
+    mib->mode            = srsran_bit_pack(&msg, 2) & 0x3;
+
+    mib->eutra_crs_seq_info      = 0;
+    mib->eutra_num_crs_ports_four = false;
+    mib->raster_offset           = SRSRAN_NBIOT_RASTER_OFFSET_M7DOT5_KHZ;
+    switch (mib->mode) {
+      case SRSRAN_NBIOT_MODE_INBAND_SAME_PCI:
+        mib->eutra_crs_seq_info = srsran_bit_pack(&msg, 5) & 0x1F;
+        break;
+      case SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI:
+        mib->eutra_num_crs_ports_four = srsran_bit_pack(&msg, 1) & 0x1;
+        mib->raster_offset            = srsran_bit_pack(&msg, 2) & 0x3;
+        break;
+      case SRSRAN_NBIOT_MODE_GUARDBAND:
+        mib->raster_offset = srsran_bit_pack(&msg, 2) & 0x3;
+        break;
+      default:
+        break;
+    }
   }
 }
 
@@ -597,6 +634,10 @@ int srsran_npbch_cp(cf_t* input, cf_t* output, srsran_nbiot_cell_t cell, bool pu
     in_ptr += delta;
   }
 
+  // REs between the end of the NB-IoT PRB in one OFDM symbol and its start in the next: zero for a grid that is just
+  // the NB-IoT PRB, (nof_prb - 1) * 12 for in-band operation inside a wider LTE carrier
+  const uint32_t row_skip = (cell.base.nof_prb - 1) * SRSRAN_NRE;
+
   for (uint32_t l = 3; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
     delta = 0;
     if (l == 3 || l == 9 || l == 10) {
@@ -611,9 +652,9 @@ int srsran_npbch_cp(cf_t* input, cf_t* output, srsran_nbiot_cell_t cell, bool pu
     }
 
     if (put) {
-      out_ptr += delta;
+      out_ptr += delta + row_skip;
     } else {
-      in_ptr += delta;
+      in_ptr += delta + row_skip;
     }
   }
 

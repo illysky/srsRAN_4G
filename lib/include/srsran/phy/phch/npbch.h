@@ -51,6 +51,11 @@ typedef struct {
   uint8_t             sys_info_tag;
   bool                ac_barring;
   srsran_nbiot_mode_t mode;
+
+  // operationModeInfo-r13 contents (TS 36.331 MasterInformationBlock-NB). Which fields are meaningful depends on mode:
+  uint8_t eutra_crs_seq_info; ///< inband-SamePCI: eutra-CRS-SequenceInfo-r13 (0..31), see TS 36.213 Table 16.8-1
+  bool    eutra_num_crs_ports_four; ///< inband-DifferentPCI: eutra-NumCRS-Ports-r13 (false=same, true=four)
+  srsran_nbiot_raster_offset_t raster_offset; ///< inband-DifferentPCI and guardband: rasterOffset-r13
 } srsran_mib_nb_t;
 
 /**

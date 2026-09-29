@@ -85,9 +85,17 @@ int srsran_npdsch_cp(srsran_npdsch_t* q, cf_t* input, cf_t* output, srsran_ra_nb
     return 0;
   }
 
+  // Number of REs between the end of the NB-IoT PRB in one OFDM symbol and its start in the next. This is zero when the
+  // grid is just the NB-IoT PRB (standalone) and (nof_prb - 1) * 12 for in-band operation inside a wider LTE carrier.
+  const uint32_t row_skip = (q->cell.base.nof_prb - 1) * SRSRAN_NRE;
+
   // start mapping at specified OFDM symbol
   for (l = grant->l_start; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
-    uint32_t delta  = (q->cell.base.nof_prb - 1) * SRSRAN_NRE; // the number of REs skipped in each OFDM symbol
+    // Extra REs to advance so the grid pointer ends up at the end of the PRB: reference-signal-aware copies can stop
+    // one RE short when a reference RE is the last one of the PRB. (Previously the reference branches *overwrote*
+    // the row skip with this 0/1 value, which only works when the grid is a single PRB wide: in-band data then
+    // walked into the neighbouring PRBs of the LTE carrier.)
+    uint32_t delta  = 0;
     uint32_t offset = 0; // the number of REs left out before start of the REF signal RE
     if (l == 5 || l == 6 || l == 12 || l == 13) {
       // always skip NRS
@@ -127,10 +135,11 @@ int srsran_npdsch_cp(srsran_npdsch_t* q, cf_t* input, cf_t* output, srsran_ra_nb
       prb_cp(&in_ptr, &out_ptr, 1);
     }
 
+    // finish this symbol and move to the same PRB in the next one
     if (put) {
-      out_ptr += delta;
+      out_ptr += delta + row_skip;
     } else {
-      in_ptr += delta;
+      in_ptr += delta + row_skip;
     }
 
 #if RE_EXT_DEBUG

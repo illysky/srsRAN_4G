@@ -72,12 +72,14 @@ int srsran_chest_dl_nbiot_init(srsran_chest_dl_nbiot_t* q, uint32_t max_prb)
       goto clean_exit;
     }
 
-    if (srsran_interp_linear_vector_init(&q->srsran_interp_linvec, SRSRAN_NRE * max_prb)) {
+    // Pilot-domain processing only ever covers the one NB-IoT PRB (12 REs, 2 pilots per NRS symbol), no matter how
+    // wide the LTE carrier is; see interpolate_pilots() for how the result is placed into the wider grid.
+    if (srsran_interp_linear_vector_init(&q->srsran_interp_linvec, SRSRAN_NRE)) {
       fprintf(stderr, "Error initializing vector interpolator\n");
       goto clean_exit;
     }
 
-    if (srsran_interp_linear_init(&q->srsran_interp_lin, 2 * max_prb, SRSRAN_NRE / 2)) {
+    if (srsran_interp_linear_init(&q->srsran_interp_lin, 2, SRSRAN_NRE / 2)) {
       fprintf(stderr, "Error initializing interpolator\n");
       goto clean_exit;
     }
@@ -135,12 +137,12 @@ int srsran_chest_dl_nbiot_set_cell(srsran_chest_dl_nbiot_t* q, srsran_nbiot_cell
         return SRSRAN_ERROR;
       }
 
-      if (srsran_interp_linear_vector_resize(&q->srsran_interp_linvec, SRSRAN_NRE * cell.base.nof_prb)) {
+      if (srsran_interp_linear_vector_resize(&q->srsran_interp_linvec, SRSRAN_NRE)) {
         fprintf(stderr, "Error initializing vector interpolator\n");
         return SRSRAN_ERROR;
       }
 
-      if (srsran_interp_linear_resize(&q->srsran_interp_lin, 2 * cell.base.nof_prb, SRSRAN_NRE / 2)) {
+      if (srsran_interp_linear_resize(&q->srsran_interp_lin, 2, SRSRAN_NRE / 2)) {
         fprintf(stderr, "Error initializing interpolator\n");
         return SRSRAN_ERROR;
       }
@@ -169,13 +171,16 @@ static float estimate_noise_pilots(srsran_chest_dl_nbiot_t* q, uint32_t port_id)
   return power;
 }
 
-#define cesymb(i) ce[SRSRAN_RE_IDX(q->cell.base.nof_prb, (i), 0)]
+// First RE of the NB-IoT PRB in OFDM symbol i of a grid that is base.nof_prb PRBs wide (one symbol per row)
+#define cesymb(i) ce[SRSRAN_RE_IDX(q->cell.base.nof_prb, (i), q->cell.nbiot_prb * SRSRAN_NRE)]
 
 static void interpolate_pilots(srsran_chest_dl_nbiot_t* q, cf_t* pilot_estimates, cf_t* ce, uint32_t port_id)
 {
   uint32_t nsymbols = srsran_refsignal_cs_nof_symbols(NULL, NULL, port_id);
-  int      num_ces  = q->cell.base.nof_prb * SRSRAN_NRE;
-  cf_t     ce_avg[2][num_ces];
+  // Only the NB-IoT PRB carries NRS, so all estimation work is on 12 REs. The estimates are written into the
+  // (possibly much wider) grid at the anchor's offset, with the grid's own row pitch.
+  const int num_ces = SRSRAN_NRE;
+  cf_t      ce_avg[2][SRSRAN_NRE];
 
   // interpolate the symbols with references in the freq domain
   DEBUG("Interpolating %d pilots in %d symbols at port %d.", nsymbols * 2, nsymbols, port_id);
@@ -202,9 +207,18 @@ static void interpolate_pilots(srsran_chest_dl_nbiot_t* q, cf_t* pilot_estimates
     memcpy(&cesymb(sym_idx + 1), ce_avg[l], num_ces * sizeof(cf_t));
   }
 
-  // now interpolate in the time domain between symbols
-  srsran_interp_linear_vector(&q->srsran_interp_linvec, ce_avg[0], ce_avg[1], &cesymb(0), 5, 5);
-  srsran_interp_linear_vector(&q->srsran_interp_linvec, ce_avg[0], ce_avg[1], &cesymb(7), 5, 5);
+  // now interpolate in the time domain between symbols. srsran_interp_linear_vector() writes its rows back to back,
+  // which only matches the grid layout when the grid is a single PRB wide. Interpolate into a small contiguous
+  // scratch buffer and copy the rows out with the real row pitch (identical result for the 1-PRB case).
+  cf_t rows[5 * SRSRAN_NRE];
+  srsran_interp_linear_vector(&q->srsran_interp_linvec, ce_avg[0], ce_avg[1], rows, 5, 5);
+  for (int r = 0; r < 5; r++) {
+    memcpy(&cesymb(r), &rows[r * SRSRAN_NRE], SRSRAN_NRE * sizeof(cf_t));
+  }
+  srsran_interp_linear_vector(&q->srsran_interp_linvec, ce_avg[0], ce_avg[1], rows, 5, 5);
+  for (int r = 0; r < 5; r++) {
+    memcpy(&cesymb(7 + r), &rows[r * SRSRAN_NRE], SRSRAN_NRE * sizeof(cf_t));
+  }
 }
 
 void srsran_chest_dl_nbiot_set_smooth_filter(srsran_chest_dl_nbiot_t* q, float* filter, uint32_t filter_len)
@@ -253,7 +267,8 @@ float srsran_chest_nbiot_dl_rssi(srsran_chest_dl_nbiot_t* q, cf_t* input, uint32
   float    rssi     = 0;
   uint32_t nsymbols = srsran_refsignal_cs_nof_symbols(NULL, NULL, port_id);
   for (uint32_t l = 0; l < nsymbols; l++) {
-    cf_t* tmp = &input[srsran_refsignal_nrs_nsymbol(l) * SRSRAN_NRE];
+    // 12 REs of the NB-IoT PRB in this symbol (row pitch is the full grid width for in-band operation)
+    cf_t* tmp = &input[SRSRAN_RE_IDX(q->cell.base.nof_prb, srsran_refsignal_nrs_nsymbol(l), q->cell.nbiot_prb * SRSRAN_NRE)];
     rssi += srsran_vec_dot_prod_conj_ccc(tmp, tmp, SRSRAN_NRE);
   }
   return rssi / nsymbols;
