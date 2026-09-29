@@ -193,10 +193,15 @@ target_link_libraries(nprach_vectors_test srsran_phy)
 # NPUSCH: the independent Python model against the library's coding blocks
 add_executable(npusch_fec_dump npusch_fec_dump.c)
 target_link_libraries(npusch_fec_dump srsran_phy)
+add_executable(npusch_rx_dump npusch_rx_dump.c)
+target_link_libraries(npusch_rx_dump srsran_phy)
 if(Python3_FOUND)
   add_test(NAME npusch_python_coding
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npusch_ref_check.py $<TARGET_FILE:npusch_fec_dump>)
   set_tests_properties(npusch_python_coding PROPERTIES LABELS "lib;phy;phch")
+  add_test(NAME npusch_receiver
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npusch_rx_check.py $<TARGET_FILE:npusch_rx_dump> quick)
+  set_tests_properties(npusch_receiver PROPERTIES LABELS "lib;phy;phch")
 endif()
 
 if(EXISTS "${NPRACH_VECTORS_DIR}/Test_Data/CVA_3")

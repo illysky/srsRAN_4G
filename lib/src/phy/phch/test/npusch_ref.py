@@ -155,7 +155,7 @@ def dmrs_single_tone(cell_id, n_slots_total, group_hopping=False, delta_ss=0, sl
         if group_hopping:
             # f_gh uses n_s' = the first slot of the resource unit, the generator restarts there
             ru = n // slots_per_ru
-            ns_first = first_slot_abs + ru * slots_per_ru
+            ns_first = (first_slot_abs + ru * slots_per_ru) % slots_per_frame   # n_s' is the slot number in the frame
             cc = gold(cell_id // n_seq, 8 * (ns_first + 1) + 8)
             f_gh = sum(int(cc[8 * ns_first + i]) << i for i in range(8)) % n_seq
             u = (f_gh + f_ss) % n_seq
