@@ -76,7 +76,7 @@ static const uint8_t real_network_sib1[] = {0x43, 0x4d, 0xd0, 0x92, 0x22, 0x06, 
 // swapped or mis-wired field cannot go unnoticed. (The deployment config uses realistic, partly equal values.)
 static const char* BASE_CONF = R"(
 nbiot = {
-  lte     = { n_prb = 25; pci = 1; nof_ports = 1; cfi = 3; };
+  lte     = { n_prb = 25; pci = 1; nof_ports = 1; cfi = 3; dl_earfcn = 6300; };
   carrier = { operation_mode = "inband_same_pci"; nbiot_prb = 17; n_id_ncell = 1; nof_ports = 1; };
   cell    = { mcc = "234"; mnc = "01"; tac = 0x0001; cell_id = 0x019B01; band = 20;
               cell_barred = false; intra_freq_reselection = true; q_rx_lev_min = -70; };
@@ -216,6 +216,103 @@ static void test_config_load()
   CHECK(c.raster_offset == SRSRAN_NBIOT_RASTER_OFFSET_P7DOT5_KHZ, "PRB 17 must give +7.5 kHz raster offset");
   CHECK(c.mcc == "234" && c.mnc == "01" && c.tac == 1 && c.cell_id == 0x019B01, "identity fields");
   CHECK(nbiot::sib1_tbs_bits(c) == 208 && nbiot::sib1_repetitions(c) == 4, "schedulingInfoSIB1=0 -> 208 bits x4");
+  // Band 20, DL EARFCN 6300 (806.0 MHz) -> LTE UL centre 847.0 MHz; PRB 17 lies 5 PRB (900 kHz) above it: 847.9 MHz,
+  // which is UL EARFCN 24309 (24150 + 159 raster steps above 832 MHz) with no offset.
+  CHECK(c.ul_freq_khz == 847900 && c.ul_earfcn == 24309 && c.ul_offset_m == 0,
+        "UL carrier of PRB 17: %u kHz, EARFCN %u, M_UL %d (want 847900 / 24309 / 0)",
+        c.ul_freq_khz,
+        c.ul_earfcn,
+        c.ul_offset_m);
+}
+
+/// The forward relation of TS 36.101 5.7.3F, written out separately from the builder's inverse.
+static double ul_freq_khz_of(uint32_t f_ul_low_khz, uint32_t n_offs_ul, uint32_t n_ul, int m_ul)
+{
+  return (double)f_ul_low_khz + 0.1 * 1000.0 * ((double)n_ul - (double)n_offs_ul) + 0.0025 * 1000.0 * 2.0 * m_ul;
+}
+
+static void test_ul_carrier()
+{
+  struct row {
+    const char* what;
+    uint32_t    band, dl_earfcn, lte_prb, prb;
+    double      anchor_khz;   // worked out by hand from the PRB geometry (see comments)
+    uint32_t    n_ul;
+    int         m_ul;
+  };
+  // Band 20: F_UL_low 832 MHz, N_Offs-UL 24150; DL EARFCN 6300 -> LTE UL centre 832 + (6300-6150) * 0.1 = 847.0 MHz.
+  // On a 25 PRB carrier PRB p is centred at (p - 12) * 180 kHz from the carrier centre (PRB 12 straddles it).
+  const row rows[] = {
+      {"25 PRB, PRB 2", 20, 6300, 25, 2, 847000 - 10 * 180, 24282, 0},
+      {"25 PRB, PRB 7", 20, 6300, 25, 7, 847000 - 5 * 180, 24291, 0},
+      {"25 PRB, PRB 17", 20, 6300, 25, 17, 847000 + 5 * 180, 24309, 0},
+      {"25 PRB, PRB 22", 20, 6300, 25, 22, 847000 + 10 * 180, 24318, 0},
+      // Even-PRB carriers put the centre between PRBs, so the anchor is 90 kHz off the raster and needs M_UL != 0.
+      // 6 PRB, PRB 2: 2 PRB above the low edge => (2 + 0.5 - 3) * 180 = -90 kHz from the centre: 846.910 MHz
+      //   = 846.9 + 0.010 -> 149 steps + 2 * 5 kHz.
+      {"6 PRB, PRB 2 (positive offset)", 20, 6300, 6, 2, 847000 - 90, 24299, 2},
+      // 50 PRB, PRB 5: (5 + 0.5 - 25) * 180 = -3510 kHz from the centre: 843.490 MHz = 843.5 - 0.010.
+      {"50 PRB, PRB 5 (negative offset)", 20, 6300, 50, 5, 847000 - 3510, 24265, -2},
+      // A different band, so the table is not only exercised on one row: band 3 (F_UL_low 1710, N_Offs-UL 19200),
+      // DL EARFCN 1575 (N_Offs-DL 1200) -> UL centre 1710 + 37.5 = 1747.5 MHz.
+      {"band 3, 25 PRB, PRB 17", 3, 1575, 25, 17, 1747500 + 5 * 180, 19584, 0}   // 1748.4 MHz: 384 steps above 1710 MHz,
+  };
+  for (const row& r : rows) {
+    uint32_t    n_ul = 0, f_khz = 0;
+    int         m_ul = 0;
+    std::string err;
+    CHECK(nbiot::derive_ul_carrier(r.band, r.dl_earfcn, r.lte_prb, r.prb, n_ul, m_ul, f_khz, err),
+          "%s: %s",
+          r.what,
+          err.c_str());
+    CHECK(n_ul == r.n_ul && m_ul == r.m_ul, "%s: got EARFCN %u / M_UL %d, want %u / %d", r.what, n_ul, m_ul, r.n_ul, r.m_ul);
+    CHECK(f_khz == (uint32_t)r.anchor_khz, "%s: got %u kHz, want %.0f", r.what, f_khz, r.anchor_khz);
+    // the pair must reproduce the anchor centre under the specification's forward formula
+    const uint32_t f_ul_low   = r.band == 20 ? 832000 : 1710000;
+    const uint32_t n_offs_ul  = r.band == 20 ? 24150 : 19200;
+    CHECK(std::fabs(ul_freq_khz_of(f_ul_low, n_offs_ul, n_ul, m_ul) - r.anchor_khz) < 1e-6,
+          "%s: (EARFCN, M_UL) gives %.3f kHz, not %.0f",
+          r.what,
+          ul_freq_khz_of(f_ul_low, n_offs_ul, n_ul, m_ul),
+          r.anchor_khz);
+  }
+
+  // Not derivable: TDD band, band without UL/DL pairing, EARFCN below the band.
+  uint32_t n_ul = 0, f_khz = 0;
+  int      m_ul = 0;
+  std::string err;
+  CHECK(!nbiot::derive_ul_carrier(38, 38000, 25, 17, n_ul, m_ul, f_khz, err) && err.find("FDD") != std::string::npos,
+        "TDD band accepted or wrong error: '%s'",
+        err.c_str());
+  CHECK(!nbiot::derive_ul_carrier(20, 6000, 25, 17, n_ul, m_ul, f_khz, err) && err.find("dl_earfcn") != std::string::npos,
+        "EARFCN below the band accepted or wrong error: '%s'",
+        err.c_str());
+}
+
+/// Every offset M_UL that can occur must survive the ASN.1 encoding: the enumeration is v-10..v-1, v-0dot5, v0, v1..v9,
+/// so a naive index mapping is off by one on one side of zero.
+static void test_ul_offset_encoding()
+{
+  nbiot::cell_config c;
+  std::string        err;
+  CHECK(load_string(BASE_CONF, c, err), "%s", err.c_str());
+  for (int m = -10; m <= 9; ++m) {
+    c.ul_offset_m = m;
+    c.ul_earfcn   = 24000 + (uint32_t)(m + 10); // a distinct EARFCN per case, so earfcn and offset cannot be confused
+    std::vector<uint8_t> tb;
+    size_t               len = 0;
+    REQUIRE(nbiot::pack_sib2(c, tb, len, err), "M_UL %d: %s", m, err.c_str());
+    asn1::rrc::bcch_dl_sch_msg_nb_s dl;
+    asn1::cbit_ref                  bref(tb.data(), tb.size());
+    REQUIRE(dl.unpack(bref) == asn1::SRSASN_SUCCESS, "M_UL %d: does not unpack", m);
+    const auto& s2 = dl.msg.c1().sys_info_r13().crit_exts.sys_info_r13().sib_type_and_info_r13[0].sib2_r13();
+    const auto& ul = s2.freq_info_r13.ul_carrier_freq_r13;
+    CHECK(ul.carrier_freq_r13 == c.ul_earfcn, "M_UL %d: EARFCN %u came back as %u", m, c.ul_earfcn, ul.carrier_freq_r13);
+    CHECK(ul.carrier_freq_offset_r13_present && std::fabs(ul.carrier_freq_offset_r13.to_number() - (float)m) < 1e-6,
+          "M_UL %d came back as %s",
+          m,
+          ul.carrier_freq_offset_r13.to_string());
+  }
 }
 
 /// The anchor PRB -> (eutra-CRS-SequenceInfo, raster offset) mapping, checked against expectations worked out from
@@ -410,6 +507,9 @@ static void test_rejections()
   expect_reject("reserved schedulingInfoSIB1", replace(BASE_CONF, "sched_info_sib1 = 0", "sched_info_sib1 = 12"),
                 "sched_info_sib1");
   expect_reject("missing key", replace(BASE_CONF, "tac = 0x0001;", ""), "tac");
+  expect_reject("missing DL EARFCN", replace(BASE_CONF, " dl_earfcn = 6300;", ""), "dl_earfcn");
+  expect_reject("TDD band (UL carrier not derivable)", replace(BASE_CONF, "band = 20", "band = 38"), "FDD");
+  expect_reject("DL EARFCN outside the band", replace(BASE_CONF, "dl_earfcn = 6300", "dl_earfcn = 100"), "dl_earfcn");
   expect_reject("wrong key type", replace(BASE_CONF, "cell_barred = false", "cell_barred = \"no\""), "cell_barred");
   expect_reject("SIB2 listed explicitly", replace(BASE_CONF, "sib_mapping = [ ]", "sib_mapping = [ 2 ]"), "SIB2");
 
@@ -507,7 +607,14 @@ static void test_sib2_roundtrip()
   CHECK(rr.ul_pwr_ctrl_common_r13.p0_nominal_npusch_r13 == -85, "P0 nominal NPUSCH");
   CHECK(std::fabs(rr.ul_pwr_ctrl_common_r13.alpha_r13.to_number() - 0.7f) < 1e-6, "alpha");
   CHECK(rr.ul_pwr_ctrl_common_r13.delta_preamb_msg3_r13 == 2, "delta preamble Msg3");
-  CHECK(!s2.freq_info_r13.ul_carrier_freq_r13_present, "UL carrier must default to the band's duplex spacing");
+  // In-band: ul-CarrierFreq is mandatory and must name PRB 17's uplink carrier (847.9 MHz = EARFCN 24309, offset 0)
+  REQUIRE(s2.freq_info_r13.ul_carrier_freq_r13_present, "ul-CarrierFreq missing (mandatory for in-band operation)");
+  CHECK(s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_r13 == 24309, "ul-CarrierFreq is %u, want 24309",
+        s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_r13);
+  REQUIRE(s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_offset_r13_present, "ul-CarrierFreq offset missing");
+  CHECK(std::string(s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_offset_r13.to_string()) == "v0",
+        "ul-CarrierFreq offset is %s, want v0",
+        s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_offset_r13.to_string());
   CHECK(std::string(s2.time_align_timer_common_r13.to_string()) == "sf5120", "time alignment timer");
 
   const auto& t = s2.ue_timers_and_consts_r13;
@@ -585,6 +692,8 @@ int main()
   test_real_network_vector();
   test_config_load();
   test_anchor_geometry();
+  test_ul_carrier();
+  test_ul_offset_encoding();
   test_mib_cross_check();
   test_sib1_roundtrip();
   test_sib2_roundtrip();

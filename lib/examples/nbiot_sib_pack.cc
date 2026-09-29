@@ -122,6 +122,11 @@ int main(int argc, char** argv)
          c.cell_id,
          c.band);
   printf("  in-band same-PCI, LTE %u PRB, NB-IoT anchor PRB %u, PCI %u\n", c.lte_nof_prb, c.nbiot_prb, c.n_id_ncell);
+  printf("  DL EARFCN %u; anchor UL carrier %.3f MHz = EARFCN %u, offset %d (SIB2-NB ul-CarrierFreq)\n",
+         c.lte_dl_earfcn,
+         c.ul_freq_khz / 1000.0,
+         c.ul_earfcn,
+         c.ul_offset_m);
   printf("  eutra-CRS-SequenceInfo %u, raster offset %s kHz\n",
          c.crs_seq_info,
          c.raster_offset == SRSRAN_NBIOT_RASTER_OFFSET_M7DOT5_KHZ   ? "-7.5"

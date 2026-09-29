@@ -103,6 +103,7 @@ struct cell_config {
   uint32_t lte_pci       = 0;
   uint32_t lte_nof_ports = 0;
   uint32_t lte_cfi       = 0;
+  uint32_t lte_dl_earfcn = 0; // DL EARFCN of the LTE carrier; the UL carrier of the anchor follows from it
 
   // NB-IoT carrier
   srsran_nbiot_mode_t mode       = SRSRAN_NBIOT_MODE_INBAND_SAME_PCI;
@@ -113,6 +114,13 @@ struct cell_config {
   // derived from lte_nof_prb + nbiot_prb (TS 36.213 Table 16.8-1)
   uint8_t                      crs_seq_info  = 0;
   srsran_nbiot_raster_offset_t raster_offset = SRSRAN_NBIOT_RASTER_OFFSET_M7DOT5_KHZ;
+
+  // derived from band + lte_dl_earfcn + nbiot_prb (TS 36.101 5.7.3F): the uplink carrier of the anchor PRB, which
+  // SIB2-NB must carry as ul-CarrierFreq for in-band operation (TS 36.331: mandatory unless standalone).
+  //   F_UL = F_UL_low + 0.1 (ul_earfcn - N_Offs-UL) + 0.0025 * 2 * ul_offset_m      [MHz]
+  uint32_t ul_earfcn   = 0;
+  int      ul_offset_m = 0;    // -10 .. 9
+  uint32_t ul_freq_khz = 0;    // resulting carrier frequency
 
   // cell identity
   std::string mcc;
@@ -143,6 +151,12 @@ struct cell_config {
 /// Parse and validate. On failure returns false and err says which key is wrong and why.
 /// (cfg is non-const because libconfig's integer/float auto-conversion is a per-Config setting.)
 bool load_config(libconfig::Config& cfg, cell_config& out, std::string& err);
+
+/// Uplink carrier of the NB-IoT anchor PRB for the given band / LTE DL EARFCN / LTE bandwidth / anchor PRB (the
+/// centre of that PRB in the LTE uplink, which lies (2 prb + 1 - n_prb) * 90 kHz from the carrier centre), expressed
+/// as the uplink EARFCN and the offset M_UL of TS 36.101 5.7.3F. Only FDD bands of Table 5.7.3-1 are known.
+bool derive_ul_carrier(uint32_t band, uint32_t lte_dl_earfcn, uint32_t lte_nof_prb, uint32_t nbiot_prb,
+                       uint32_t& ul_earfcn, int& ul_offset_m, uint32_t& ul_freq_khz, std::string& err);
 
 /// Convenience: read a file, then load_config().
 bool load_config_file(const std::string& path, cell_config& out, std::string& err);

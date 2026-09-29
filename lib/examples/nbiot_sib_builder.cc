@@ -77,6 +77,108 @@ bool valid_lte_prb(uint32_t n)
 
 } // namespace
 
+/*************************************************************************************************
+ * Uplink carrier of the anchor PRB
+ *************************************************************************************************/
+
+namespace {
+
+// TS 36.101 v14.3.0 Table 5.7.3-1, FDD bands: band, F_DL_low [kHz], N_Offs-DL, F_UL_low [kHz], N_Offs-UL.
+// Extracted from the specification text by script.
+struct band_row {
+  uint32_t band;
+  uint32_t fdl_low_khz;
+  uint32_t n_offs_dl;
+  uint32_t ful_low_khz;
+  uint32_t n_offs_ul;
+};
+
+const band_row BAND_TABLE[] = {
+    {1, 2110000, 0, 1920000, 18000},
+    {2, 1930000, 600, 1850000, 18600},
+    {3, 1805000, 1200, 1710000, 19200},
+    {4, 2110000, 1950, 1710000, 19950},
+    {5, 869000, 2400, 824000, 20400},
+    {6, 875000, 2650, 830000, 20650},
+    {7, 2620000, 2750, 2500000, 20750},
+    {8, 925000, 3450, 880000, 21450},
+    {9, 1844900, 3800, 1749900, 21800},
+    {10, 2110000, 4150, 1710000, 22150},
+    {11, 1475900, 4750, 1427900, 22750},
+    {12, 729000, 5010, 699000, 23010},
+    {13, 746000, 5180, 777000, 23180},
+    {14, 758000, 5280, 788000, 23280},
+    {17, 734000, 5730, 704000, 23730},
+    {18, 860000, 5850, 815000, 23850},
+    {19, 875000, 6000, 830000, 24000},
+    {20, 791000, 6150, 832000, 24150},
+    {21, 1495900, 6450, 1447900, 24450},
+    {22, 3510000, 6600, 3410000, 24600},
+    {23, 2180000, 7500, 2000000, 25500},
+    {24, 1525000, 7700, 1626500, 25700},
+    {25, 1930000, 8040, 1850000, 26040},
+    {26, 859000, 8690, 814000, 26690},
+    {27, 852000, 9040, 807000, 27040},
+    {28, 758000, 9210, 703000, 27210},
+    {30, 2350000, 9770, 2305000, 27660},
+    {31, 462500, 9870, 452500, 27760},
+    {65, 2110000, 65536, 1920000, 131072},
+    {66, 2110000, 66436, 1710000, 131972},
+    {68, 753000, 67536, 698000, 132672},
+    {70, 1995000, 68336, 1695000, 132972},
+};
+
+} // namespace
+
+bool derive_ul_carrier(uint32_t band,
+                       uint32_t lte_dl_earfcn,
+                       uint32_t lte_nof_prb,
+                       uint32_t nbiot_prb,
+                       uint32_t& ul_earfcn,
+                       int&      ul_offset_m,
+                       uint32_t& ul_freq_khz,
+                       std::string& err)
+{
+  const band_row* row = nullptr;
+  for (const band_row& r : BAND_TABLE) {
+    if (r.band == band) {
+      row = &r;
+    }
+  }
+  if (row == nullptr) {
+    err = "nbiot.cell.band " + std::to_string(band) +
+          " is not an FDD band of TS 36.101 Table 5.7.3-1 known to the builder, so the uplink carrier of the anchor "
+          "cannot be derived (TDD bands and bands 15/16/29/32/67/69 are not supported)";
+    return false;
+  }
+  if (lte_dl_earfcn < row->n_offs_dl) {
+    err = "nbiot.lte.dl_earfcn " + std::to_string(lte_dl_earfcn) + " is below the first channel number of band " +
+          std::to_string(band) + " (" + std::to_string(row->n_offs_dl) + ")";
+    return false;
+  }
+  // LTE uplink carrier centre: the UL channel number is the DL one plus (N_Offs-UL - N_Offs-DL)
+  int64_t lte_ul_khz = (int64_t)row->ful_low_khz + 100 * (int64_t)(lte_dl_earfcn - row->n_offs_dl);
+  // centre of the anchor PRB: (prb + 1/2 - n_prb / 2) * 180 kHz from the carrier centre
+  int64_t anchor_khz = lte_ul_khz + (2 * (int64_t)nbiot_prb + 1 - (int64_t)lte_nof_prb) * 90;
+  int64_t rel        = anchor_khz - (int64_t)row->ful_low_khz;
+  if (rel < 0) {
+    err = "the uplink carrier of NB-IoT anchor PRB " + std::to_string(nbiot_prb) + " lies below band " +
+          std::to_string(band);
+    return false;
+  }
+  int64_t k = (rel + 50) / 100; // nearest 100 kHz raster point
+  int64_t r = rel - 100 * k;    // remainder in [-50, 50) kHz, must be 5 kHz * M_UL
+  if (r % 5 != 0 || r / 5 < -10 || r / 5 > 9) {
+    err = "the uplink carrier of NB-IoT anchor PRB " + std::to_string(nbiot_prb) + " (" + std::to_string(anchor_khz) +
+          " kHz) is not representable as EARFCN plus offset M_UL in -10..9 (TS 36.101 5.7.3F)";
+    return false;
+  }
+  ul_earfcn   = (uint32_t)((int64_t)row->n_offs_ul + k);
+  ul_offset_m = (int)(r / 5);
+  ul_freq_khz = (uint32_t)anchor_khz;
+  return true;
+}
+
 bool load_config(libconfig::Config& cfg, cell_config& o, std::string& err)
 {
   cfg.setAutoConvert(true);
@@ -84,7 +186,8 @@ bool load_config(libconfig::Config& cfg, cell_config& o, std::string& err)
 
   // ---- LTE host
   if (!get(cfg, "nbiot.lte.n_prb", o.lte_nof_prb, err) || !get(cfg, "nbiot.lte.pci", o.lte_pci, err) ||
-      !get(cfg, "nbiot.lte.nof_ports", o.lte_nof_ports, err) || !get(cfg, "nbiot.lte.cfi", o.lte_cfi, err)) {
+      !get(cfg, "nbiot.lte.nof_ports", o.lte_nof_ports, err) || !get(cfg, "nbiot.lte.cfi", o.lte_cfi, err) ||
+      !get(cfg, "nbiot.lte.dl_earfcn", o.lte_dl_earfcn, err)) {
     return false;
   }
   if (!valid_lte_prb(o.lte_nof_prb)) {
@@ -155,6 +258,10 @@ bool load_config(libconfig::Config& cfg, cell_config& o, std::string& err)
   }
   if (o.band < 1 || o.band > 256) {
     err = "nbiot.cell.band must be 1..256";
+    return false;
+  }
+  if (!derive_ul_carrier(o.band, o.lte_dl_earfcn, o.lte_nof_prb, o.nbiot_prb, o.ul_earfcn, o.ul_offset_m,
+                         o.ul_freq_khz, err)) {
     return false;
   }
   if (o.q_rx_lev_min < -70 || o.q_rx_lev_min > -22) {
@@ -697,7 +804,18 @@ bool pack_sib2(const cell_config& c, std::vector<uint8_t>& out, size_t& unpadded
   }
 
   // ---- frequency info / timing advance
-  s2.freq_info_r13.ul_carrier_freq_r13_present = false; // default duplex spacing for the band
+  // TS 36.331: ul-CarrierFreq is mandatory unless the operation mode is standalone. It names the uplink carrier of
+  // the anchor PRB (the UE would otherwise not know where to transmit, and a 7.5 kHz error is fatal for NPRACH).
+  s2.freq_info_r13.ul_carrier_freq_r13_present                = true;
+  s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_r13       = c.ul_earfcn;
+  s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_offset_r13_present = true;
+  {
+    // enumeration order: v-10 .. v-1, v-0dot5, v0, v1 .. v9
+    int m   = c.ul_offset_m;
+    int idx = m < 0 ? m + 10 : m + 11;
+    s2.freq_info_r13.ul_carrier_freq_r13.carrier_freq_offset_r13.value =
+        (asn1::rrc::carrier_freq_nb_r13_s::carrier_freq_offset_r13_opts::options)idx;
+  }
   s2.freq_info_r13.add_spec_emission_r13       = 1;
   if (!set_str(s2.time_align_timer_common_r13, z.time_alignment_timer, k + "time_alignment_timer", err)) {
     return false;
