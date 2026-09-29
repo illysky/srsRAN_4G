@@ -129,6 +129,20 @@ int main(int argc, char** argv)
          : c.raster_offset == SRSRAN_NBIOT_RASTER_OFFSET_P2DOT5_KHZ ? "+2.5"
                                                                     : "+7.5");
 
+  // Command-line arguments that make the PHY example tools use this cell, so scripts never restate cell parameters.
+  printf("  generator args: -N %u -M %d -c %u -p %u -t %u -S\n",
+         c.lte_nof_prb,
+         (int)c.mode,
+         c.n_id_ncell,
+         c.nbiot_prb,
+         c.sched_info_sib1);
+  printf("  decoder args: -n %u -M %d -I %u -P %u -t %u -S\n",
+         c.lte_nof_prb,
+         (int)c.mode,
+         c.n_id_ncell,
+         c.nbiot_prb,
+         c.sched_info_sib1);
+
   std::vector<uint8_t> mib_bits;
   if (!nbiot::pack_mib_bits(c, 0, 0, mib_bits, err)) {
     fprintf(stderr, "MIB-NB error: %s\n", err.c_str());
