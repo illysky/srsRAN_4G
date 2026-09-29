@@ -177,6 +177,19 @@ add_executable(nprach_test nprach_test.c)
 target_link_libraries(nprach_test srsran_phy)
 add_lte_test(nprach_test nprach_test)
 
+# eNodeB side of NB-IoT random access: RA-RNTI, timing advance, RAR MAC PDU, Msg3 grant
+add_executable(nbiot_ra_test nbiot_ra_test.c)
+target_link_libraries(nbiot_ra_test srsran_phy)
+add_lte_test(nbiot_ra_test nbiot_ra_test)
+
+add_executable(nbiot_ra_dump nbiot_ra_dump.c)
+target_link_libraries(nbiot_ra_dump srsran_phy)
+
+# in-band front end (LTE-rate uplink -> anchor PRB at 1.92 MS/s) feeding the NPRACH detector
+add_executable(nprach_frontend_test nprach_frontend_test.c)
+target_link_libraries(nprach_frontend_test srsran_phy)
+add_lte_test(nprach_frontend_test nprach_frontend_test)
+
 # Independent check of the hopping and the baseband waveform against a Python model written from the specification
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND)
@@ -202,6 +215,9 @@ if(Python3_FOUND)
   add_test(NAME npusch_receiver
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npusch_rx_check.py $<TARGET_FILE:npusch_rx_dump> quick)
   set_tests_properties(npusch_receiver PROPERTIES LABELS "lib;phy;phch")
+  add_test(NAME nbiot_ra_python
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_ra_check.py $<TARGET_FILE:nbiot_ra_dump> $<TARGET_FILE:npusch_rx_dump>)
+  set_tests_properties(nbiot_ra_python PROPERTIES LABELS "lib;phy;phch")
 endif()
 
 if(EXISTS "${NPRACH_VECTORS_DIR}/Test_Data/CVA_3")

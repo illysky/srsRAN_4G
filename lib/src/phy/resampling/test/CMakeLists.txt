@@ -43,3 +43,11 @@ add_test(resampler_test_8 resampler_test -s 1920 -r 2 -f 8)
 add_test(resampler_test_12 resampler_test -s 1920 -r 2 -f 12)
 add_test(resampler_test_16 resampler_test -s 1920 -r 2 -f 16)
 
+
+########################################################################
+# In-band NB-IoT uplink front end (anchor PRB -> 1.92 MS/s)
+########################################################################
+add_executable(anchor_fe_test anchor_fe_test.c)
+target_link_libraries(anchor_fe_test srsran_phy)
+
+add_test(anchor_fe_test anchor_fe_test)
