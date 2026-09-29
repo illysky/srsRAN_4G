@@ -54,11 +54,26 @@ static int g_checks = 0;
     }                                                                                                                  \
   } while (0)
 
+/// Like CHECK, but abandons the current test function: later checks would dereference what this one just proved absent.
+#define REQUIRE(cond, ...)                                                                                             \
+  do {                                                                                                                 \
+    ++g_checks;                                                                                                        \
+    if (!(cond)) {                                                                                                     \
+      ++g_fail;                                                                                                        \
+      printf("FAIL %s:%d: ", __FILE__, __LINE__);                                                                      \
+      printf(__VA_ARGS__);                                                                                             \
+      printf("\n");                                                                                                    \
+      return;                                                                                                          \
+    }                                                                                                                  \
+  } while (0)
+
 // A SIB1-NB captured from a real in-band NB-IoT operator network (the payload the generator has always broadcast).
 static const uint8_t real_network_sib1[] = {0x43, 0x4d, 0xd0, 0x92, 0x22, 0x06, 0x04, 0x30, 0x28,
                                             0x6e, 0x87, 0xd0, 0x4b, 0x13, 0x90, 0xb4, 0x12, 0xa1,
                                             0x02, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
+// NOTE: every SIB2 field deliberately has a value different from every other field of the same kind, so that a
+// swapped or mis-wired field cannot go unnoticed. (The deployment config uses realistic, partly equal values.)
 static const char* BASE_CONF = R"(
 nbiot = {
   lte     = { n_prb = 25; pci = 1; nof_ports = 1; cfi = 3; };
@@ -69,6 +84,69 @@ nbiot = {
   sib1    = { si_window_length = 160; si_radio_frame_offset = 1; nrs_crs_power_offset = 0;
               eutra_control_region_size = 3;
               sched_info = ( { si_periodicity = 1024; si_repetition_pattern = 4; si_tb = 208; sib_mapping = [ ]; } ); };
+
+  sib2 = {
+    rach = {
+      preamble_trans_max_ce         = 20;
+      preamble_init_rx_target_power = -104;  // dBm; same as the live LTE cell (sib.conf preamble_init_rx_target_pwr)
+      power_ramping_step            = 6;     // dB
+      ra_response_window            = 7;     // ra-ResponseWindowSize, in NPDCCH search-space periods
+      mac_contention_timer          = 32;    // in NPDCCH search-space periods
+    };
+
+    // NPRACH: what the UE transmits Msg1 on. The Phase 2 detector must be configured from exactly these values.
+    nprach = {
+      cp_length_us                 = 66.7;   // 66.7 = preamble format 0, 266.7 = format 1
+      periodicity_ms               = 640;
+      start_time_ms                = 64;
+      subcarrier_offset            = 18;     // first 3.75 kHz subcarrier of the NPRACH region
+      nof_subcarriers              = 24;     // 12, 24, 36 or 48
+      nof_ce_levels                = 1;      // only 1 is implemented
+      msg3_subcarrier_range_start  = "oneThird"; // zero | oneThird | twoThird | one
+      max_preamble_attempts        = 8;      // maxNumPreambleAttemptCE
+      num_repetitions_per_preamble = 16;
+      npdcch_num_repetitions_ra    = 128;      // Rmax of the Type-2 common search space
+      npdcch_start_sf_css_ra       = 48;      // search-space period = this x Rmax subframes
+      npdcch_offset_ra             = "oneEighth"; // zero | oneEighth | oneFourth | threeEighth
+    };
+
+    pcch = {
+      default_paging_cycle_rf       = 256;   // RADIO FRAMES (128/256/512/1024)
+      nB                            = "halfT";
+      npdcch_num_repetitions_paging = 512;
+    };
+
+    npdsch = {
+      // Reference power of one NRS RE. The UE computes path loss as (this - measured NRSRP) and sets its NPRACH
+      // power from it, so a wrong value makes every UE transmit that many dB too loud or too quiet.
+      // PLACEHOLDER: measure the NRS EPRE at the antenna port (in-band: LTE CRS EPRE + sib1.nrs_crs_power_offset).
+      nrs_power_dbm = -20;
+    };
+
+    npusch = {
+      ack_nack_num_repetitions_msg4 = 4;
+      group_hopping_enabled         = true;
+      group_assignment_npusch       = 11;
+      // DMRS base sequence / cyclic shift are not signalled: the UE derives them from the cell id.
+    };
+
+    ul_power_control = {
+      p0_nominal_npusch   = -85;   // dBm
+      alpha               = 0.7;
+      delta_preamble_msg3 = 2;     // dB
+    };
+
+    ue_timers = {
+      t300 = 10000;   // ms
+      t301 = 15000;
+      t310 = 8000;
+      n310 = 10;
+      t311 = 20000;
+      n311 = 5;
+    };
+
+    time_alignment_timer = "sf5120";
+  };
 };
 )";
 
@@ -244,7 +322,7 @@ static void test_sib1_roundtrip()
 
   std::vector<uint8_t> tb;
   size_t               len = 0;
-  CHECK(nbiot::pack_sib1(c, 0xA5, tb, len, err), "pack_sib1: %s", err.c_str());
+  REQUIRE(nbiot::pack_sib1(c, 0xA5, tb, len, err), "pack_sib1: %s", err.c_str());
   CHECK(tb.size() == 26, "transport block is %zu bytes, want 26 (208 bits)", tb.size());
   CHECK(len > 0 && len <= 26, "unpadded length %zu", len);
   for (size_t i = len; i < tb.size(); ++i) {
@@ -261,11 +339,11 @@ static void test_sib1_roundtrip()
 
   asn1::rrc::bcch_dl_sch_msg_nb_s dl;
   asn1::cbit_ref                  bref(tb.data(), tb.size());
-  CHECK(dl.unpack(bref) == asn1::SRSASN_SUCCESS, "own SIB1-NB does not unpack");
+  REQUIRE(dl.unpack(bref) == asn1::SRSASN_SUCCESS, "own SIB1-NB does not unpack");
   const asn1::rrc::sib_type1_nb_s& s = dl.msg.c1().sib_type1_r13();
   CHECK(s.hyper_sfn_msb_r13.to_number() == 0xA5, "hyperSFN");
   const auto& car = s.cell_access_related_info_r13;
-  CHECK(car.plmn_id_list_r13.size() == 1, "one PLMN");
+  REQUIRE(car.plmn_id_list_r13.size() == 1, "one PLMN");
   const auto& plmn = car.plmn_id_list_r13[0].plmn_id_r13;
   CHECK(plmn.mcc[0] == 2 && plmn.mcc[1] == 3 && plmn.mcc[2] == 4, "MCC");
   CHECK(plmn.mnc.size() == 2 && plmn.mnc[0] == 0 && plmn.mnc[1] == 1, "MNC keeps its leading zero");
@@ -278,7 +356,7 @@ static void test_sib1_roundtrip()
   CHECK(s.eutra_ctrl_region_size_r13_present && s.eutra_ctrl_region_size_r13.to_number() == 3, "control region");
   CHECK(s.nrs_crs_pwr_offset_r13_present && s.nrs_crs_pwr_offset_r13.to_number() == 0.0f, "NRS/CRS power offset");
   CHECK(s.si_win_len_r13.to_number() == 160 && s.si_radio_frame_offset_r13 == 1, "SI window / offset");
-  CHECK(s.sched_info_list_r13.size() == 1, "one SI message");
+  REQUIRE(s.sched_info_list_r13.size() == 1, "one SI message");
   CHECK(s.sched_info_list_r13[0].si_periodicity_r13.to_number() == 1024, "SI periodicity");
   CHECK(s.sched_info_list_r13[0].si_repeat_pattern_r13.to_number() == 4, "SI repetition pattern");
   CHECK(s.sched_info_list_r13[0].si_tb_r13.to_number() == 208, "SI TB");
@@ -369,6 +447,138 @@ static void test_overflow()
   CHECK(tb.size() == 41, "328 bits = 41 bytes, got %zu", tb.size());
 }
 
+/*************************************************************************************************/
+static void test_sib2_roundtrip()
+{
+  nbiot::cell_config c;
+  std::string        err;
+  CHECK(load_string(BASE_CONF, c, err), "%s", err.c_str());
+
+  std::vector<uint8_t> tb;
+  size_t               len = 0;
+  REQUIRE(nbiot::pack_sib2(c, tb, len, err), "pack_sib2: %s", err.c_str());
+  CHECK(tb.size() == 26, "SI message transport block is %zu bytes, want 26 (si_tb 208)", tb.size());
+  CHECK(len > 0 && len <= 26, "unpadded length %zu", len);
+  for (size_t i = len; i < tb.size(); ++i) {
+    CHECK(tb[i] == 0, "padding byte %zu is not zero", i);
+  }
+
+  asn1::rrc::bcch_dl_sch_msg_nb_s dl;
+  asn1::cbit_ref                  bref(tb.data(), tb.size());
+  REQUIRE(dl.unpack(bref) == asn1::SRSASN_SUCCESS, "own SI message does not unpack");
+  CHECK(dl.msg.c1().type() == asn1::rrc::bcch_dl_sch_msg_type_nb_c::c1_c_::types::sys_info_r13, "not a SystemInformation-NB");
+  const auto& ies = dl.msg.c1().sys_info_r13().crit_exts.sys_info_r13();
+  REQUIRE(ies.sib_type_and_info_r13.size() == 1, "expected exactly SIB2-NB in the SI message");
+  const asn1::rrc::sib_type2_nb_r13_s& s2 = ies.sib_type_and_info_r13[0].sib2_r13();
+  const auto&                          rr = s2.rr_cfg_common_r13;
+
+  CHECK(rr.rach_cfg_common_r13.preamb_trans_max_ce_r13.to_number() == 20, "preambleTransMax-CE");
+  CHECK(rr.rach_cfg_common_r13.pwr_ramp_params_r13.preamb_init_rx_target_pwr.to_number() == -104, "target power");
+  CHECK(rr.rach_cfg_common_r13.pwr_ramp_params_r13.pwr_ramp_step.to_number() == 6, "ramping step");
+  REQUIRE(rr.rach_cfg_common_r13.rach_info_list_r13.size() == 1, "one RACH info entry");
+  CHECK(rr.rach_cfg_common_r13.rach_info_list_r13[0].ra_resp_win_size_r13.to_number() == 7, "RA response window");
+  CHECK(rr.rach_cfg_common_r13.rach_info_list_r13[0].mac_contention_resolution_timer_r13.to_number() == 32, "contention timer");
+
+  CHECK(rr.pcch_cfg_r13.default_paging_cycle_r13.to_number() == 256, "paging cycle");
+  CHECK(std::string(rr.pcch_cfg_r13.nb_r13.to_string()) == "halfT", "nB");
+  CHECK(rr.pcch_cfg_r13.npdcch_num_repeat_paging_r13.to_number() == 512, "paging repetitions");
+
+  CHECK(std::string(rr.nprach_cfg_r13.nprach_cp_len_r13.to_string()) == "us66dot7", "NPRACH CP length");
+  REQUIRE(rr.nprach_cfg_r13.nprach_params_list_r13.size() == 1, "one NPRACH resource");
+  const auto& np = rr.nprach_cfg_r13.nprach_params_list_r13[0];
+  CHECK(np.nprach_periodicity_r13.to_number() == 640, "NPRACH periodicity");
+  CHECK(np.nprach_start_time_r13.to_number() == 64, "NPRACH start time");
+  CHECK(np.nprach_subcarrier_offset_r13.to_number() == 18, "NPRACH subcarrier offset");
+  CHECK(np.nprach_num_subcarriers_r13.to_number() == 24, "NPRACH subcarriers");
+  CHECK(std::string(np.nprach_subcarrier_msg3_range_start_r13.to_string()) == "oneThird", "Msg3 range start");
+  CHECK(np.max_num_preamb_attempt_ce_r13.to_number() == 8, "max preamble attempts");
+  CHECK(np.num_repeats_per_preamb_attempt_r13.to_number() == 16, "repetitions per preamble");
+  CHECK(np.npdcch_num_repeats_ra_r13.to_number() == 128, "RA NPDCCH repetitions");
+  CHECK(np.npdcch_start_sf_css_ra_r13.to_number() == 48.0f, "RA NPDCCH start SF");
+  CHECK(std::string(np.npdcch_offset_ra_r13.to_string()) == "oneEighth", "RA NPDCCH offset");
+
+  CHECK(rr.npdsch_cfg_common_r13.nrs_pwr_r13 == -20, "NRS power");
+  CHECK(rr.npusch_cfg_common_r13.ack_nack_num_repeats_msg4_r13.size() == 1 &&
+            rr.npusch_cfg_common_r13.ack_nack_num_repeats_msg4_r13[0].to_number() == 4,
+        "ACK/NACK repetitions for Msg4");
+  CHECK(!rr.npusch_cfg_common_r13.dmrs_cfg_r13_present, "DMRS config must not be signalled (UE derives from cell id)");
+  CHECK(rr.npusch_cfg_common_r13.ul_ref_sigs_npusch_r13.group_hop_enabled_r13, "group hopping");
+  CHECK(rr.npusch_cfg_common_r13.ul_ref_sigs_npusch_r13.group_assign_npusch_r13 == 11, "group assignment");
+  CHECK(rr.ul_pwr_ctrl_common_r13.p0_nominal_npusch_r13 == -85, "P0 nominal NPUSCH");
+  CHECK(std::fabs(rr.ul_pwr_ctrl_common_r13.alpha_r13.to_number() - 0.7f) < 1e-6, "alpha");
+  CHECK(rr.ul_pwr_ctrl_common_r13.delta_preamb_msg3_r13 == 2, "delta preamble Msg3");
+  CHECK(!s2.freq_info_r13.ul_carrier_freq_r13_present, "UL carrier must default to the band's duplex spacing");
+  CHECK(std::string(s2.time_align_timer_common_r13.to_string()) == "sf5120", "time alignment timer");
+
+  const auto& t = s2.ue_timers_and_consts_r13;
+  CHECK(t.t300_r13.to_number() == 10000 && t.t301_r13.to_number() == 15000 && t.t310_r13.to_number() == 8000 &&
+            t.n310_r13.to_number() == 10 && t.t311_r13.to_number() == 20000 && t.n311_r13.to_number() == 5,
+        "UE timers and constants");
+
+  // re-encode stability
+  uint8_t       out[64] = {};
+  asn1::bit_ref oref(out, sizeof(out));
+  CHECK(dl.pack(oref) == asn1::SRSASN_SUCCESS, "re-pack");
+  oref.align_bytes_zero();
+  CHECK((size_t)oref.distance_bytes() == len && memcmp(out, tb.data(), len) == 0, "SI message not stable under re-encode");
+
+  // changing a value that matters to the UE changes the bits
+  nbiot::cell_config c2;
+  CHECK(load_string(replace(BASE_CONF, "periodicity_ms               = 640", "periodicity_ms               = 1280"), c2, err), "%s", err.c_str());
+  std::vector<uint8_t> tb2;
+  size_t               len2 = 0;
+  CHECK(nbiot::pack_sib2(c2, tb2, len2, err), "%s", err.c_str());
+  CHECK(tb2 != tb, "changing the NPRACH periodicity did not change SIB2-NB");
+}
+
+/// Load may succeed while packing fails (value valid as a number but not encodable in ASN.1); either way the config
+/// must be refused, and the message must point at the offending key.
+static void expect_refused(const char* what, const std::string& text, const char* must_mention)
+{
+  nbiot::cell_config c;
+  std::string        err;
+  bool               ok = load_string(text, c, err);
+  if (ok) {
+    std::vector<uint8_t> tb;
+    size_t               len = 0;
+    ok = nbiot::pack_sib1(c, 0, tb, len, err) && nbiot::pack_sib2(c, tb, len, err);
+  }
+  CHECK(!ok, "'%s' was accepted but must be refused", what);
+  if (!ok) {
+    CHECK(err.find(must_mention) != std::string::npos,
+          "'%s' refused for the wrong reason: '%s' (expected it to mention '%s')",
+          what,
+          err.c_str(),
+          must_mention);
+  }
+}
+
+static void test_sib2_rejections()
+{
+  expect_refused("NPRACH periodicity not in the ASN.1 set",
+                 replace(BASE_CONF, "periodicity_ms               = 640", "periodicity_ms               = 700"),
+                 "nprach.periodicity_ms");
+  expect_refused("alpha not in the ASN.1 set", replace(BASE_CONF, "alpha               = 0.7", "alpha               = 0.75"), "alpha");
+  expect_refused("unknown nB", replace(BASE_CONF, "nB                            = \"halfT\"", "nB                            = \"bogus\""), "nB");
+  expect_refused("two CE levels", replace(BASE_CONF, "nof_ce_levels                = 1", "nof_ce_levels                = 2"), "nof_ce_levels");
+  expect_refused("NPRACH subcarriers overflow the carrier",
+                 replace(BASE_CONF, "subcarrier_offset            = 18", "subcarrier_offset            = 36"),
+                 "48");
+  expect_refused("NRS power out of range", replace(BASE_CONF, "nrs_power_dbm = -20", "nrs_power_dbm = 80"), "nrs_power_dbm");
+  expect_refused("unknown NPRACH CP length", replace(BASE_CONF, "cp_length_us                 = 66.7", "cp_length_us                 = 100"), "cp_length_us");
+  expect_refused("unknown Msg3 range start",
+                 replace(BASE_CONF, "msg3_subcarrier_range_start  = \"oneThird\"", "msg3_subcarrier_range_start  = \"half\""),
+                 "msg3_subcarrier_range_start");
+  expect_refused("paging cycle not in the ASN.1 set",
+                 replace(BASE_CONF, "default_paging_cycle_rf       = 256", "default_paging_cycle_rf       = 2048"),
+                 "default_paging_cycle_rf");
+  expect_refused("missing UE timer", replace(BASE_CONF, "t311 = 20000;", ""), "t311");
+  expect_refused("P0 out of range", replace(BASE_CONF, "p0_nominal_npusch   = -85", "p0_nominal_npusch   = -200"), "p0_nominal_npusch");
+
+  // SIB2-NB does not fit a 56-bit SI message; the error must say which si_tb would.
+  expect_refused("si_tb too small for SIB2-NB", replace(BASE_CONF, "si_tb = 208", "si_tb = 56"), "smallest that fits is 208");
+}
+
 int main()
 {
   printf("nbiot_sib_test\n");
@@ -377,7 +587,9 @@ int main()
   test_anchor_geometry();
   test_mib_cross_check();
   test_sib1_roundtrip();
+  test_sib2_roundtrip();
   test_rejections();
+  test_sib2_rejections();
   test_overflow();
   printf("%d checks, %d failed\n", g_checks, g_fail);
   return g_fail == 0 ? 0 : 1;

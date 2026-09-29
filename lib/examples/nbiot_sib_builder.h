@@ -52,6 +52,50 @@ struct si_sched_entry {
   std::vector<uint32_t> sib_mapping;            ///< SIB numbers OTHER than SIB2-NB (which is implicit)
 };
 
+/// SIB2-NB content (TS 36.331 SystemInformationBlockType2-NB). Everything the UE needs for random access and paging.
+struct sib2_config {
+  // RACH-ConfigCommon-NB
+  uint32_t preamble_trans_max_ce         = 0; ///< preambleTransMax-CE, attempts
+  int      preamble_init_rx_target_power = 0; ///< dBm, even values -120..-90
+  uint32_t power_ramping_step_db         = 0; ///< 0, 2, 4 or 6
+  uint32_t ra_response_window            = 0; ///< in NPDCCH search-space periods
+  uint32_t mac_contention_timer          = 0; ///< in NPDCCH search-space periods
+
+  // NPRACH-ConfigSIB-NB (single coverage-enhancement level)
+  double   nprach_cp_length_us          = 0; ///< 66.7 (format 0) or 266.7 (format 1)
+  uint32_t nprach_periodicity_ms        = 0;
+  uint32_t nprach_start_time_ms         = 0;
+  uint32_t nprach_subcarrier_offset     = 0;
+  uint32_t nprach_num_subcarriers       = 0;
+  std::string msg3_subcarrier_range_start;   ///< "zero", "oneThird", "twoThird" or "one"
+  uint32_t max_preamble_attempts        = 0; ///< maxNumPreambleAttemptCE
+  uint32_t num_repetitions_per_preamble = 0;
+  uint32_t npdcch_num_repetitions_ra    = 0;
+  double   npdcch_start_sf_css_ra       = 0; ///< multiple of Rmax: 1.5, 2, 4, ... 64
+  std::string npdcch_offset_ra;              ///< "zero", "oneEighth", "oneFourth" or "threeEighth"
+
+  // PCCH-Config-NB
+  uint32_t    default_paging_cycle_rf = 0; ///< radio frames: 128, 256, 512 or 1024
+  std::string nb;                          ///< "oneT", "halfT", ...
+  uint32_t    npdcch_num_repetitions_paging = 0;
+
+  // NPDSCH / NPUSCH common
+  int      nrs_power_dbm                = 0;
+  uint32_t ack_nack_num_repetitions_msg4 = 0;
+  bool     group_hopping_enabled        = false;
+  uint32_t group_assignment_npusch      = 0;
+
+  // UL power control
+  int    p0_nominal_npusch   = 0;
+  double alpha               = 0;
+  int    delta_preamble_msg3 = 0;
+
+  // UE timers and constants (ms / counts)
+  uint32_t t300 = 0, t301 = 0, t310 = 0, n310 = 0, t311 = 0, n311 = 0;
+
+  std::string time_alignment_timer; ///< "infinity" or "sf500" ... "sf10240"
+};
+
 /// Everything needed to describe one in-band NB-IoT cell. Fields marked "derived" are computed, not configured.
 struct cell_config {
   // LTE host carrier
@@ -91,6 +135,9 @@ struct cell_config {
   double                      nrs_crs_pwr_offset_db = 0.0;
   uint32_t                    eutra_ctrl_region     = 0;
   std::vector<si_sched_entry> si_sched;
+
+  // SIB2-NB
+  sib2_config sib2;
 };
 
 /// Parse and validate. On failure returns false and err says which key is wrong and why.
@@ -118,6 +165,14 @@ bool pack_mib_bits(const cell_config& c, uint32_t hfn, uint32_t sfn, std::vector
 ///
 /// hyper_sfn_msb: 8 MSBs of the 10-bit hyper-SFN (the 2 LSBs are in MIB-NB).
 bool pack_sib1(const cell_config& c, uint8_t hyper_sfn_msb, std::vector<uint8_t>& out, size_t& unpadded_len, std::string& err);
+
+/// SIB2-NB transport block size implied by the first SI message's si_tb, in bits.
+uint32_t sib2_tbs_bits(const cell_config& c);
+
+/// Pack the first SI message: a BCCH-DL-SCH SystemInformation-NB carrying SIB2-NB (plus nothing else; other SIBs are
+/// not implemented). Zero-padded to the si_tb of the first schedulingInfoList entry, and refused if it does not fit --
+/// in which case the error names the smallest si_tb that would.
+bool pack_sib2(const cell_config& c, std::vector<uint8_t>& out, size_t& unpadded_len, std::string& err);
 
 } // namespace nbiot
 

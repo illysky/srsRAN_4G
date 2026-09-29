@@ -39,12 +39,13 @@
 
 static void usage(const char* prog)
 {
-  printf("Usage: %s -c enb_nbiot.conf [-H hyper_sfn_msb] [-o sib1.bin] [-j]\n", prog);
+  printf("Usage: %s -c enb_nbiot.conf [-H hyper_sfn_msb] [-o sib1.bin] [-s sib2.bin] [-j]\n", prog);
   printf("       %s -d sib1.bin        (decode a SIB1-NB transport block to JSON)\n", prog);
   printf("  -c FILE  NB-IoT carrier config (libconfig)\n");
   printf("  -H N     hyper-SFN 8 MSBs to place in SIB1-NB (default 0)\n");
   printf("  -o FILE  write the padded SIB1-NB transport block (binary)\n");
-  printf("  -j       print decoded MIB-NB and SIB1-NB as JSON\n");
+  printf("  -s FILE  write the padded SIB2-NB (first SI message) transport block (binary)\n");
+  printf("  -j       print the decoded SIB1-NB and SI message (SIB2-NB) as JSON\n");
 }
 
 /// Decode a SIB1-NB transport block file and print it as JSON (no config needed).
@@ -73,12 +74,12 @@ static int decode_file(const char* path)
 
 int main(int argc, char** argv)
 {
-  std::string conf, out_file;
+  std::string conf, out_file, sib2_file;
   unsigned    hfn_msb = 0;
   bool        json    = false;
 
   int opt;
-  while ((opt = getopt(argc, argv, "c:H:o:d:jh")) != -1) {
+  while ((opt = getopt(argc, argv, "c:H:o:s:d:jh")) != -1) {
     switch (opt) {
       case 'd':
         return decode_file(optarg);
@@ -90,6 +91,9 @@ int main(int argc, char** argv)
         break;
       case 'o':
         out_file = optarg;
+        break;
+      case 's':
+        sib2_file = optarg;
         break;
       case 'j':
         json = true;
@@ -144,6 +148,19 @@ int main(int argc, char** argv)
   }
   printf("  SIB1-NB: %zu bytes (%zu bits) of %zu bytes available\n", unpadded, unpadded * 8, sib1.size());
 
+  std::vector<uint8_t> sib2;
+  size_t               unpadded2 = 0;
+  if (!nbiot::pack_sib2(c, sib2, unpadded2, err)) {
+    fprintf(stderr, "SIB2-NB error: %s\n", err.c_str());
+    return 1;
+  }
+  printf("  SIB2-NB: %zu bytes (%zu bits) of %zu bytes available (SI message 0: periodicity %u rf, every %u rf)\n",
+         unpadded2,
+         unpadded2 * 8,
+         sib2.size(),
+         c.si_sched[0].periodicity_rf,
+         c.si_sched[0].repetition_pattern);
+
   if (json) {
     asn1::rrc::bcch_dl_sch_msg_nb_s dl;
     asn1::cbit_ref                  bref(sib1.data(), sib1.size());
@@ -154,6 +171,29 @@ int main(int argc, char** argv)
     asn1::json_writer j;
     dl.to_json(j);
     printf("%s\n", j.to_string().c_str());
+
+    asn1::rrc::bcch_dl_sch_msg_nb_s si;
+    asn1::cbit_ref                  bref2(sib2.data(), sib2.size());
+    if (si.unpack(bref2) != asn1::SRSASN_SUCCESS) {
+      fprintf(stderr, "internal error: packed SIB2-NB does not unpack\n");
+      return 1;
+    }
+    asn1::json_writer j2;
+    si.to_json(j2);
+    printf("%s\n", j2.to_string().c_str());
+  }
+
+  if (!sib2_file.empty()) {
+    FILE* f = fopen(sib2_file.c_str(), "wb");
+    if (!f || fwrite(sib2.data(), 1, sib2.size(), f) != sib2.size()) {
+      fprintf(stderr, "cannot write %s\n", sib2_file.c_str());
+      if (f) {
+        fclose(f);
+      }
+      return 1;
+    }
+    fclose(f);
+    printf("  wrote %zu bytes to %s\n", sib2.size(), sib2_file.c_str());
   }
 
   if (!out_file.empty()) {

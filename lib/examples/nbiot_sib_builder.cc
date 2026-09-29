@@ -239,6 +239,68 @@ bool load_config(libconfig::Config& cfg, cell_config& o, std::string& err)
     return false;
   }
 
+  // ---- SIB2
+  sib2_config& z = o.sib2;
+  uint32_t     nof_ce_levels = 0;
+  if (!get(cfg, "nbiot.sib2.rach.preamble_trans_max_ce", z.preamble_trans_max_ce, err) ||
+      !get(cfg, "nbiot.sib2.rach.preamble_init_rx_target_power", z.preamble_init_rx_target_power, err) ||
+      !get(cfg, "nbiot.sib2.rach.power_ramping_step", z.power_ramping_step_db, err) ||
+      !get(cfg, "nbiot.sib2.rach.ra_response_window", z.ra_response_window, err) ||
+      !get(cfg, "nbiot.sib2.rach.mac_contention_timer", z.mac_contention_timer, err) ||
+      !get(cfg, "nbiot.sib2.nprach.cp_length_us", z.nprach_cp_length_us, err) ||
+      !get(cfg, "nbiot.sib2.nprach.periodicity_ms", z.nprach_periodicity_ms, err) ||
+      !get(cfg, "nbiot.sib2.nprach.start_time_ms", z.nprach_start_time_ms, err) ||
+      !get(cfg, "nbiot.sib2.nprach.subcarrier_offset", z.nprach_subcarrier_offset, err) ||
+      !get(cfg, "nbiot.sib2.nprach.nof_subcarriers", z.nprach_num_subcarriers, err) ||
+      !get(cfg, "nbiot.sib2.nprach.nof_ce_levels", nof_ce_levels, err) ||
+      !get(cfg, "nbiot.sib2.nprach.msg3_subcarrier_range_start", z.msg3_subcarrier_range_start, err) ||
+      !get(cfg, "nbiot.sib2.nprach.max_preamble_attempts", z.max_preamble_attempts, err) ||
+      !get(cfg, "nbiot.sib2.nprach.num_repetitions_per_preamble", z.num_repetitions_per_preamble, err) ||
+      !get(cfg, "nbiot.sib2.nprach.npdcch_num_repetitions_ra", z.npdcch_num_repetitions_ra, err) ||
+      !get(cfg, "nbiot.sib2.nprach.npdcch_start_sf_css_ra", z.npdcch_start_sf_css_ra, err) ||
+      !get(cfg, "nbiot.sib2.nprach.npdcch_offset_ra", z.npdcch_offset_ra, err) ||
+      !get(cfg, "nbiot.sib2.pcch.default_paging_cycle_rf", z.default_paging_cycle_rf, err) ||
+      !get(cfg, "nbiot.sib2.pcch.nB", z.nb, err) ||
+      !get(cfg, "nbiot.sib2.pcch.npdcch_num_repetitions_paging", z.npdcch_num_repetitions_paging, err) ||
+      !get(cfg, "nbiot.sib2.npdsch.nrs_power_dbm", z.nrs_power_dbm, err) ||
+      !get(cfg, "nbiot.sib2.npusch.ack_nack_num_repetitions_msg4", z.ack_nack_num_repetitions_msg4, err) ||
+      !get(cfg, "nbiot.sib2.npusch.group_hopping_enabled", z.group_hopping_enabled, err) ||
+      !get(cfg, "nbiot.sib2.npusch.group_assignment_npusch", z.group_assignment_npusch, err) ||
+      !get(cfg, "nbiot.sib2.ul_power_control.p0_nominal_npusch", z.p0_nominal_npusch, err) ||
+      !get(cfg, "nbiot.sib2.ul_power_control.alpha", z.alpha, err) ||
+      !get(cfg, "nbiot.sib2.ul_power_control.delta_preamble_msg3", z.delta_preamble_msg3, err) ||
+      !get(cfg, "nbiot.sib2.ue_timers.t300", z.t300, err) || !get(cfg, "nbiot.sib2.ue_timers.t301", z.t301, err) ||
+      !get(cfg, "nbiot.sib2.ue_timers.t310", z.t310, err) || !get(cfg, "nbiot.sib2.ue_timers.n310", z.n310, err) ||
+      !get(cfg, "nbiot.sib2.ue_timers.t311", z.t311, err) || !get(cfg, "nbiot.sib2.ue_timers.n311", z.n311, err) ||
+      !get(cfg, "nbiot.sib2.time_alignment_timer", z.time_alignment_timer, err)) {
+    return false;
+  }
+  if (nof_ce_levels != 1) {
+    err = "nbiot.sib2.nprach.nof_ce_levels must be 1: multiple coverage-enhancement levels are not implemented";
+    return false;
+  }
+  if (z.nrs_power_dbm < -60 || z.nrs_power_dbm > 50) {
+    err = "nbiot.sib2.npdsch.nrs_power_dbm must be -60..50";
+    return false;
+  }
+  if (z.p0_nominal_npusch < -126 || z.p0_nominal_npusch > 24) {
+    err = "nbiot.sib2.ul_power_control.p0_nominal_npusch must be -126..24";
+    return false;
+  }
+  if (z.delta_preamble_msg3 < -1 || z.delta_preamble_msg3 > 6) {
+    err = "nbiot.sib2.ul_power_control.delta_preamble_msg3 must be -1..6";
+    return false;
+  }
+  if (z.group_assignment_npusch > 29) {
+    err = "nbiot.sib2.npusch.group_assignment_npusch must be 0..29";
+    return false;
+  }
+  // NPRACH has to fit in the UL carrier's 48 3.75 kHz subcarriers
+  if (z.nprach_subcarrier_offset + z.nprach_num_subcarriers > 48) {
+    err = "nbiot.sib2.nprach: subcarrier_offset + nof_subcarriers must not exceed 48";
+    return false;
+  }
+
   return true;
 }
 
@@ -478,6 +540,195 @@ bool pack_sib1(const cell_config&   c,
   }
 
   out.assign(tbs_bits / 8, 0);
+  memcpy(out.data(), buf, unpadded_len);
+  return true;
+}
+
+/*************************************************************************************************
+ * SIB2-NB
+ *************************************************************************************************/
+
+namespace {
+
+std::string fmt_num(double v)
+{
+  char b[32];
+  snprintf(b, sizeof(b), "%g", v);
+  return b;
+}
+
+/// Set an ASN.1 enumeration from a number by matching to_number() (with a small tolerance for the float ones).
+template <typename E>
+bool set_num(E& e, double v, const std::string& key, std::string& err)
+{
+  for (uint32_t i = 0; i < E::nof_types; ++i) {
+    e = (typename E::options)i;
+    double n = (double)e.to_number();
+    if (std::fabs(n - v) <= 1e-3 * std::max(1.0, std::fabs(v))) {
+      return true;
+    }
+  }
+  err = "value " + fmt_num(v) + " of " + key + " is not encodable";
+  return false;
+}
+
+/// Set an ASN.1 enumeration from its ASN.1 name (as printed by to_string()).
+template <typename E>
+bool set_str(E& e, const std::string& s, const std::string& key, std::string& err)
+{
+  if (!asn1::string_to_enum(e, s)) {
+    err = "value '" + s + "' of " + key + " is not a valid choice";
+    return false;
+  }
+  return true;
+}
+
+} // namespace
+
+uint32_t sib2_tbs_bits(const cell_config& c)
+{
+  return c.si_sched.empty() ? 0 : c.si_sched[0].tb_bits;
+}
+
+bool pack_sib2(const cell_config& c, std::vector<uint8_t>& out, size_t& unpadded_len, std::string& err)
+{
+  using namespace asn1::rrc;
+  const sib2_config& z = c.sib2;
+  const std::string  k = "nbiot.sib2.";
+
+  bcch_dl_sch_msg_nb_s   msg;
+  sys_info_nb_r13_ies_s& ies = msg.msg.set_c1().set_sys_info_r13().crit_exts.set_sys_info_r13();
+  ies.sib_type_and_info_r13.resize(1);
+  sib_type2_nb_r13_s&         s2 = ies.sib_type_and_info_r13[0].set_sib2_r13();
+  rr_cfg_common_sib_nb_r13_s& rr = s2.rr_cfg_common_r13;
+
+  // ---- RACH
+  rach_cfg_common_nb_r13_s& rach = rr.rach_cfg_common_r13;
+  if (!set_num(rach.preamb_trans_max_ce_r13, z.preamble_trans_max_ce, k + "rach.preamble_trans_max_ce", err) ||
+      !set_num(rach.pwr_ramp_params_r13.preamb_init_rx_target_pwr,
+               z.preamble_init_rx_target_power,
+               k + "rach.preamble_init_rx_target_power",
+               err) ||
+      !set_num(rach.pwr_ramp_params_r13.pwr_ramp_step, z.power_ramping_step_db, k + "rach.power_ramping_step", err)) {
+    return false;
+  }
+  rach.rach_info_list_r13.resize(1);
+  if (!set_num(rach.rach_info_list_r13[0].ra_resp_win_size_r13, z.ra_response_window, k + "rach.ra_response_window", err) ||
+      !set_num(rach.rach_info_list_r13[0].mac_contention_resolution_timer_r13,
+               z.mac_contention_timer,
+               k + "rach.mac_contention_timer",
+               err)) {
+    return false;
+  }
+
+  // ---- BCCH / PCCH
+  rr.bcch_cfg_r13.mod_period_coeff_r13 = bcch_cfg_nb_r13_s::mod_period_coeff_r13_opts::n16;
+  if (!set_num(rr.pcch_cfg_r13.default_paging_cycle_r13, z.default_paging_cycle_rf, k + "pcch.default_paging_cycle_rf", err) ||
+      !set_str(rr.pcch_cfg_r13.nb_r13, z.nb, k + "pcch.nB", err) ||
+      !set_num(rr.pcch_cfg_r13.npdcch_num_repeat_paging_r13,
+               z.npdcch_num_repetitions_paging,
+               k + "pcch.npdcch_num_repetitions_paging",
+               err)) {
+    return false;
+  }
+
+  // ---- NPRACH
+  nprach_cfg_sib_nb_r13_s& npr = rr.nprach_cfg_r13;
+  if (std::fabs(z.nprach_cp_length_us - 66.7) < 0.1) {
+    npr.nprach_cp_len_r13 = nprach_cfg_sib_nb_r13_s::nprach_cp_len_r13_opts::us66dot7;
+  } else if (std::fabs(z.nprach_cp_length_us - 266.7) < 0.1) {
+    npr.nprach_cp_len_r13 = nprach_cfg_sib_nb_r13_s::nprach_cp_len_r13_opts::us266dot7;
+  } else {
+    err = "value " + fmt_num(z.nprach_cp_length_us) + " of " + k + "nprach.cp_length_us must be 66.7 or 266.7";
+    return false;
+  }
+  npr.rsrp_thress_prach_info_list_r13_present = false;
+  npr.nprach_params_list_r13.resize(1);
+  nprach_params_nb_r13_s& np = npr.nprach_params_list_r13[0];
+  if (!set_num(np.nprach_periodicity_r13, z.nprach_periodicity_ms, k + "nprach.periodicity_ms", err) ||
+      !set_num(np.nprach_start_time_r13, z.nprach_start_time_ms, k + "nprach.start_time_ms", err) ||
+      !set_num(np.nprach_subcarrier_offset_r13, z.nprach_subcarrier_offset, k + "nprach.subcarrier_offset", err) ||
+      !set_num(np.nprach_num_subcarriers_r13, z.nprach_num_subcarriers, k + "nprach.nof_subcarriers", err) ||
+      !set_str(np.nprach_subcarrier_msg3_range_start_r13,
+               z.msg3_subcarrier_range_start,
+               k + "nprach.msg3_subcarrier_range_start",
+               err) ||
+      !set_num(np.max_num_preamb_attempt_ce_r13, z.max_preamble_attempts, k + "nprach.max_preamble_attempts", err) ||
+      !set_num(np.num_repeats_per_preamb_attempt_r13,
+               z.num_repetitions_per_preamble,
+               k + "nprach.num_repetitions_per_preamble",
+               err) ||
+      !set_num(np.npdcch_num_repeats_ra_r13, z.npdcch_num_repetitions_ra, k + "nprach.npdcch_num_repetitions_ra", err) ||
+      !set_num(np.npdcch_start_sf_css_ra_r13, z.npdcch_start_sf_css_ra, k + "nprach.npdcch_start_sf_css_ra", err) ||
+      !set_str(np.npdcch_offset_ra_r13, z.npdcch_offset_ra, k + "nprach.npdcch_offset_ra", err)) {
+    return false;
+  }
+
+  // ---- NPDSCH / NPUSCH
+  rr.npdsch_cfg_common_r13.nrs_pwr_r13 = (int8_t)z.nrs_power_dbm;
+
+  npusch_cfg_common_nb_r13_s& npu = rr.npusch_cfg_common_r13;
+  npu.ack_nack_num_repeats_msg4_r13.resize(1);
+  if (!set_num(npu.ack_nack_num_repeats_msg4_r13[0], z.ack_nack_num_repetitions_msg4, k + "npusch.ack_nack_num_repetitions_msg4", err)) {
+    return false;
+  }
+  // DMRS base sequence / cyclic shift are deliberately NOT signalled: the UE then derives them from the cell id
+  // (TS 36.211 10.1.4.1.2), which is what the Phase 2 receiver will assume.
+  npu.srs_sf_cfg_r13_present                  = false;
+  npu.dmrs_cfg_r13_present                    = false;
+  npu.ul_ref_sigs_npusch_r13.group_hop_enabled_r13   = z.group_hopping_enabled;
+  npu.ul_ref_sigs_npusch_r13.group_assign_npusch_r13 = (uint8_t)z.group_assignment_npusch;
+
+  rr.dl_gap_r13_present = false;
+
+  // ---- UL power control
+  rr.ul_pwr_ctrl_common_r13.p0_nominal_npusch_r13 = (int8_t)z.p0_nominal_npusch;
+  rr.ul_pwr_ctrl_common_r13.delta_preamb_msg3_r13 = (int8_t)z.delta_preamble_msg3;
+  if (!set_num(rr.ul_pwr_ctrl_common_r13.alpha_r13, z.alpha, k + "ul_power_control.alpha", err)) {
+    return false;
+  }
+
+  // ---- UE timers
+  ue_timers_and_consts_nb_r13_s& t = s2.ue_timers_and_consts_r13;
+  if (!set_num(t.t300_r13, z.t300, k + "ue_timers.t300", err) || !set_num(t.t301_r13, z.t301, k + "ue_timers.t301", err) ||
+      !set_num(t.t310_r13, z.t310, k + "ue_timers.t310", err) || !set_num(t.n310_r13, z.n310, k + "ue_timers.n310", err) ||
+      !set_num(t.t311_r13, z.t311, k + "ue_timers.t311", err) || !set_num(t.n311_r13, z.n311, k + "ue_timers.n311", err)) {
+    return false;
+  }
+
+  // ---- frequency info / timing advance
+  s2.freq_info_r13.ul_carrier_freq_r13_present = false; // default duplex spacing for the band
+  s2.freq_info_r13.add_spec_emission_r13       = 1;
+  if (!set_str(s2.time_align_timer_common_r13, z.time_alignment_timer, k + "time_alignment_timer", err)) {
+    return false;
+  }
+
+  // ---- pack and fit
+  uint8_t           buf[256] = {};
+  asn1::bit_ref     bref(buf, sizeof(buf));
+  asn1::SRSASN_CODE ret = msg.pack(bref);
+  if (ret != asn1::SRSASN_SUCCESS) {
+    err = "SIB2-NB ASN.1 pack failed";
+    return false;
+  }
+  bref.align_bytes_zero();
+  unpadded_len = bref.distance_bytes();
+
+  const uint32_t tb_bits = sib2_tbs_bits(c);
+  if (unpadded_len * 8 > tb_bits) {
+    static const uint32_t sizes[] = {56, 120, 208, 256, 328, 440, 552, 680};
+    std::string           fit     = "no si_tb is large enough";
+    for (uint32_t sz : sizes) {
+      if (unpadded_len * 8 <= sz) {
+        fit = "the smallest that fits is " + std::to_string(sz);
+        break;
+      }
+    }
+    err = "SIB2-NB is " + std::to_string(unpadded_len * 8) + " bits but nbiot.sib1.sched_info[0].si_tb is " +
+          std::to_string(tb_bits) + "; " + fit;
+    return false;
+  }
+  out.assign(tb_bits / 8, 0);
   memcpy(out.data(), buf, unpadded_len);
   return true;
 }

@@ -121,11 +121,16 @@ if(LIBCONFIGPP_FOUND)
   # the recovered transport block must be byte-identical to the one that was built.
   # Remove any leftovers first so the comparison at the end can never pass on a stale file from an earlier run.
   add_test(NAME nbiot_sib1_clean
-           COMMAND ${CMAKE_COMMAND} -E remove -f /tmp/nbiot_sib1_test.bin /tmp/nbiot_sib1_rx.bin /tmp/enbtest_inband_sib1.bin)
+           COMMAND ${CMAKE_COMMAND} -E remove -f /tmp/nbiot_sib1_test.bin /tmp/nbiot_sib2_test.bin /tmp/nbiot_sib1_rx.bin /tmp/enbtest_inband_sib1.bin)
   add_test(NAME nbiot_sib1_build
-           COMMAND nbiot_sib_pack -c ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_inband.conf -o /tmp/nbiot_sib1_test.bin)
-  set_property(TEST nbiot_sib1_build PROPERTY PASS_REGULAR_EXPRESSION "wrote 26 bytes")
+           COMMAND nbiot_sib_pack -c ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_inband.conf -o /tmp/nbiot_sib1_test.bin -s /tmp/nbiot_sib2_test.bin)
+  set_property(TEST nbiot_sib1_build PROPERTY PASS_REGULAR_EXPRESSION "SIB2-NB: [0-9]+ bytes.*wrote 26 bytes.*wrote 26 bytes")
   set_property(TEST nbiot_sib1_build APPEND PROPERTY DEPENDS nbiot_sib1_clean)
+
+  # The standalone decoder must read back what was written: SIB2-NB inside a SystemInformation-NB message.
+  add_test(NAME nbiot_sib2_decode COMMAND nbiot_sib_pack -d /tmp/nbiot_sib2_test.bin)
+  set_property(TEST nbiot_sib2_decode PROPERTY PASS_REGULAR_EXPRESSION "systemInformation-r13.*sib2-r13.*nprach-ParametersList-r13")
+  set_property(TEST nbiot_sib2_decode APPEND PROPERTY DEPENDS nbiot_sib1_build)
 
   set(ARG "-o;/tmp/enbtest_inband_sib1.bin;-n;64;-t;0;-N;25;-M;0;-c;1;-p;17;-S;-B;/tmp/nbiot_sib1_test.bin")
   add_test(NAME enb_inband_sib1
