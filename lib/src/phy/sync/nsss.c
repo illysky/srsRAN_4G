@@ -354,23 +354,28 @@ void srsran_nsss_generate(cf_t* signal, uint32_t cell_id)
     int q    = floor(cell_id / 126.0);
     int sign = -1;
 
-    // iterate over all possible cyclic shifts
-    for (int theta_f = 0; theta_f < SRSRAN_NSSS_NUM_SEQ; theta_f++) {
+    // iterate over all possible cyclic shifts. theta_f_idx = (nf/2) mod 4 and theta_f = 33/132 * theta_f_idx = idx/4
+    // (TS 36.211 10.2.7.2.1). The phase ramp exp(-j 2 pi theta_f n) must use the FRACTION: with the integer index it
+    // is exp(-j 2 pi k n) = 1 for every n, and the four sequences come out identical.
+    for (int theta_f_idx = 0; theta_f_idx < SRSRAN_NSSS_NUM_SEQ; theta_f_idx++) {
       for (int n = 0; n < SRSRAN_NSSS_LEN; n++) {
         int n_prime = n % 131;
         int m       = n % 128;
 
-        float         arg = (float)sign * 2.0 * M_PI * ((float)theta_f) * ((float)n);
+        // Both phases are periodic, so reduce the integer argument first and keep float32 out of the big numbers:
+        // exp(-j 2 pi theta_f n) with theta_f = idx/4 repeats with n*idx mod 4, and the Zadoff-Chu part
+        // exp(-j pi u n'(n'+1)/131) with (u n'(n'+1)) mod 262 (n'(n'+1) is even, so the argument is 2 pi k/131).
+        float         arg = (float)(sign * 2.0 * M_PI * (double)((theta_f_idx * n) % 4) / 4.0);
         float complex tmp1;
         __real__ tmp1 = cosf(arg);
         __imag__ tmp1 = sinf(arg);
 
-        arg = ((float)sign * M_PI * ((float)u) * (float)n_prime * ((float)n_prime + 1.0)) / 131.0;
+        arg = (float)(sign * M_PI * (double)(((int64_t)u * n_prime * (n_prime + 1)) % (2 * 131)) / 131.0);
         float complex tmp2;
         __real__ tmp2 = cosf(arg);
         __imag__ tmp2 = sinf(arg);
 
-        signal[theta_f * SRSRAN_NSSS_LEN + n] = b_q_m[q][m] * tmp1 * tmp2;
+        signal[theta_f_idx * SRSRAN_NSSS_LEN + n] = b_q_m[q][m] * tmp1 * tmp2;
       }
     }
   } else {
@@ -385,7 +390,9 @@ void srsran_nsss_put_subframe(srsran_nsss_synch_t* q,
                               const uint32_t       nof_prb,
                               const uint32_t       nbiot_prb_offset)
 {
-  int theta_f = (int)floor(33 / 132.0 * (nf / 2.0)) % SRSRAN_NSSS_NUM_SEQ;
+  // Index of the cyclic shift: theta_f = 33/132 * ((nf/2) mod 4), and srsran_nsss_generate() stores theta_f = 33/132 * i
+  // at index i. (This used to be floor(33/132 * nf/2) mod 4, which is (nf/8) mod 4: it changed only every 80 ms.)
+  int theta_f = (nf / 2) % SRSRAN_NSSS_NUM_SEQ;
 
   // skip first 3 OFDM symbols over all PRBs completely
   int k = 3 * nof_prb * SRSRAN_NRE + nbiot_prb_offset * SRSRAN_NRE;

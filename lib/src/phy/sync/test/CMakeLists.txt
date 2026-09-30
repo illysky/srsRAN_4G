@@ -81,6 +81,16 @@ add_test(sync_test_400_e sync_test -o 400 -e -p 50 -c 123)
 ########################################################################
 
 add_test(npss_test_nonoise npss_test)
+
+# NPSS / NSSS as transmitted, against TS 36.211 10.2.7 (independent Python model)
+add_executable(nbiot_sync_dump nbiot_sync_dump.c)
+target_link_libraries(nbiot_sync_dump srsran_phy)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  add_test(NAME nbiot_sync_python
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_sync_check.py $<TARGET_FILE:nbiot_sync_dump>)
+  set_tests_properties(nbiot_sync_python PROPERTIES LABELS "lib;phy;sync")
+endif()
 add_test(nsss_test_nonoise_2 nsss_test -c 2)
 add_test(nsss_test_nonoise_501 nsss_test -c 501)
 
