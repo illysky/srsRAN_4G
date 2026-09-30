@@ -122,6 +122,24 @@ void sf_grid_t::new_tti(tti_point tti_rx_)
     ul_mask.fill(anchor, anchor + 1);
   }
 
+  // Reserve what LTE-M takes in these subframes (whole RBGs in the DL)
+  if (cc_cfg->cfg.emtc_dl_prbs) {
+    const uint64_t prbs = cc_cfg->cfg.emtc_dl_prbs(to_tx_dl(tti_rx).to_uint());
+    for (uint32_t n = 0; n < cc_cfg->nof_prb() && n < 64; n++) {
+      if ((prbs >> n) & 1U) {
+        dl_mask.set(n / cc_cfg->P);
+      }
+    }
+  }
+  if (cc_cfg->cfg.emtc_ul_prbs) {
+    const uint64_t prbs = cc_cfg->cfg.emtc_ul_prbs(to_tx_ul(tti_rx).to_uint());
+    for (uint32_t n = 0; n < cc_cfg->nof_prb() && n < 64; n++) {
+      if ((prbs >> n) & 1U) {
+        ul_mask.set(n);
+      }
+    }
+  }
+
   // Reserve PRBs for PRACH
   if (srsran_prach_in_window_config_fdd(cc_cfg->cfg.prach_config, to_tx_ul(tti_rx).to_uint(), -1)) {
     prbmask_t prach_mask{cc_cfg->nof_prb()};

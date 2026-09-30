@@ -28,9 +28,15 @@
 #include "srsran/phy/channel/channel.h"
 #include "srsran/srsran.h"
 #include <inttypes.h>
+#include <memory>
 #include <vector>
 
 namespace srsenb {
+
+namespace emtc {
+struct bcast;
+struct config;
+} // namespace emtc
 
 struct phy_cell_cfg_t {
   srsran_cell_t cell;
@@ -79,6 +85,9 @@ struct phy_args_t {
   srsran::channel::args_t ul_channel_args;
   cfr_args_t              cfr_args;
   std::string             nbiot_config; ///< NB-IoT in-band carrier description (enb_nbiot.conf); empty = no NB-IoT
+  std::string             emtc_config;  ///< LTE-M description (enb_emtc.conf); empty = no LTE-M
+  std::shared_ptr<const emtc::bcast>  emtc_bcast; ///< what the first carrier broadcasts to BL UEs (built by enb.cc)
+  std::shared_ptr<const emtc::config> emtc_cfg;
 };
 
 struct phy_cfg_t {

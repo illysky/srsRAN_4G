@@ -20,7 +20,9 @@
 
 set(SOURCES
         lte/cc_worker.cc
+        lte/emtc_dl.cc
         lte/nbiot_dl.cc
+        emtc_config.cc
         lte/sf_worker.cc
         lte/worker_pool.cc
         nbiot_mac.cc

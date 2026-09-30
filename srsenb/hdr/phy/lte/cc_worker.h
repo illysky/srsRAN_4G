@@ -34,6 +34,7 @@ namespace srsenb {
 namespace lte {
 
 class nbiot_dl; // in-band NB-IoT anchor, see nbiot_dl.h
+class emtc_dl;  // LTE-M, see emtc_dl.h
 
 class cc_worker
 {
@@ -102,6 +103,8 @@ private:
 
   // In-band NB-IoT anchor, present when expert.nbiot_config is set (first carrier only)
   std::unique_ptr<nbiot_dl> nbiot;
+  // LTE-M system information and transmissions, present when expert.emtc_config is set (first carrier only)
+  std::unique_ptr<emtc_dl> emtc;
   uint32_t                  hfn_tx = 0;
 
   // Class to store user information

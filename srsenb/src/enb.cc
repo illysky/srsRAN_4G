@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/enb.h"
+#include "srsenb/hdr/phy/emtc_config.h"
 #include "srsenb/hdr/phy/lte/nbiot_dl.h"
 #include "srsenb/hdr/stack/enb_stack_lte.h"
 #include "srsenb/hdr/x2_adapter.h"
@@ -88,6 +89,38 @@ int enb::init(const all_args_t& args_)
                     nb_cfg.nbiot_prb,
                     nb_cfg.lte_dl_earfcn,
                     nb_cfg.ul_earfcn);
+  }
+
+  // LTE-M: build what SIB1-BR and the BR SIB2 say from the cell's own SIBs, and keep the LTE scheduler off it
+  if (not args.phy.emtc_config.empty()) {
+    auto        ecfg = std::make_shared<srsenb::emtc::config>();
+    auto        bc   = std::make_shared<srsenb::emtc::bcast>();
+    std::string err;
+    if (rrc_cfg.cell_list.empty() or not srsenb::emtc::load(args.phy.emtc_config, *ecfg, err) or
+        not srsenb::emtc::build_bcast(rrc_cfg, rrc_cfg.cell.nof_prb, rrc_cfg.cell_list[0].pci, *ecfg, *bc, err)) {
+      srsran::console("LTE-M (%s): %s\n", args.phy.emtc_config.c_str(), rrc_cfg.cell_list.empty() ? "no LTE cell" : err.c_str());
+      return SRSRAN_ERROR;
+    }
+    args.phy.emtc_bcast = bc;
+    args.phy.emtc_cfg   = ecfg;
+    rrc_cfg.emtc_dl_prbs = [bc](uint32_t tti) { return srsran_emtc_bcast_prbs(&bc->sched, (tti / 10) % 1024, tti % 10); };
+    srsran::console("LTE-M: SIB1-BR %zu bytes (TBS %u, %u repetitions), SIB2-BR %zu bytes (TBS %u, narrowband %u)\n",
+                    bc->sib1_len,
+                    srsran_emtc_sib1_br_tbs(bc->sched.sched_info_sib1_br),
+                    srsran_emtc_sib1_br_repetitions(bc->sched.sched_info_sib1_br),
+                    bc->si_len[0],
+                    bc->sched.si[0].tbs,
+                    bc->sched.si[0].nb);
+    auto hex = [](const std::vector<uint8_t>& v, size_t n) {
+      std::string h;
+      char        b[3];
+      for (size_t i = 0; i < n && i < v.size(); i++) {
+        snprintf(b, sizeof(b), "%02x", v[i]);
+        h += b;
+      }
+      return h;
+    };
+    srsran::console("LTE-M: SIB1-BR %s\nLTE-M: SIB2-BR %s\n", hex(bc->sib1, bc->sib1_len).c_str(), hex(bc->si[0], bc->si_len[0]).c_str());
   }
 
   srsran::byte_buffer_pool::get_instance()->enable_logger(true);

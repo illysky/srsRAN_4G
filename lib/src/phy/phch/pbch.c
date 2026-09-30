@@ -352,6 +352,13 @@ void srsran_pbch_mib_pack(srsran_cell_t* cell, uint32_t sfn, uint8_t* payload)
   srsran_bit_unpack(sfn >> 2, &msg, 8);
 }
 
+void srsran_pbch_mib_pack_br(srsran_cell_t* cell, uint32_t sfn, uint32_t sched_info_sib1_br, uint8_t* payload)
+{
+  srsran_pbch_mib_pack(cell, sfn, payload);
+  uint8_t* msg = payload + 14; // dl-Bandwidth (3), phich-Config (3), systemFrameNumber (8)
+  srsran_bit_unpack(sched_info_sib1_br & 0x1f, &msg, 5);
+}
+
 void srsran_pbch_decode_reset(srsran_pbch_t* q)
 {
   q->frame_idx = 0;

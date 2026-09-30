@@ -23,6 +23,7 @@
 #include "srsran/adt/bounded_vector.h"
 #include "srsran/common/common.h"
 #include "srsran/srsran.h"
+#include <functional>
 #include <vector>
 
 #ifndef SRSRAN_SCHED_INTERFACE_H
@@ -167,6 +168,10 @@ public:
     // In-band NB-IoT anchor PRB, or -1. LTE never gets this PRB, in either direction: the NB-IoT downlink overwrites it
     // and the NB-IoT uplink (NPRACH, NPUSCH) is received on it.
     int nbiot_anchor_prb = -1;
+
+    // LTE-M: PRBs (bit n = PRB n) that LTE-M takes in the DL subframe / UL subframe with this TTI. LTE never gets them.
+    std::function<uint64_t(uint32_t tti_tx_dl)> emtc_dl_prbs;
+    std::function<uint64_t(uint32_t tti_tx_ul)> emtc_ul_prbs;
 
     uint32_t srs_subframe_config;
     uint32_t srs_subframe_offset;

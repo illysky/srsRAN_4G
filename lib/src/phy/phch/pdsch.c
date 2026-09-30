@@ -133,6 +133,11 @@ static inline uint32_t pdsch_cp_crs_offset(const srsran_cell_t* cell, uint32_t l
   return cell->id % 3;
 }
 
+static inline uint32_t pdsch_scrambling_sf(const srsran_dl_sf_cfg_t* sf, const srsran_pdsch_cfg_t* cfg)
+{
+  return cfg->bl_ce_scrambling ? cfg->bl_ce_scrambling_sf % SRSRAN_NOF_SF_X_FRAME : sf->tti % SRSRAN_NOF_SF_X_FRAME;
+}
+
 static int srsran_pdsch_cp(const srsran_pdsch_t*       q,
                            cf_t*                       input,
                            cf_t*                       output,
@@ -719,7 +724,7 @@ static int srsran_pdsch_codeword_decode(srsran_pdsch_t*     q,
                                     q->e[codeword_idx],
                                     cfg->rnti,
                                     codeword_idx,
-                                    2 * (sf->tti % SRSRAN_NOF_SF_X_FRAME),
+                                    2 * pdsch_scrambling_sf(sf, cfg),
                                     q->cell.id,
                                     cfg->grant.tb[tb_idx].nof_bits);
     } else {
@@ -727,7 +732,7 @@ static int srsran_pdsch_codeword_decode(srsran_pdsch_t*     q,
                                     q->e[codeword_idx],
                                     cfg->rnti,
                                     codeword_idx,
-                                    2 * (sf->tti % SRSRAN_NOF_SF_X_FRAME),
+                                    2 * pdsch_scrambling_sf(sf, cfg),
                                     q->cell.id,
                                     cfg->grant.tb[tb_idx].nof_bits);
     }
@@ -999,7 +1004,7 @@ static int srsran_pdsch_codeword_encode(srsran_pdsch_t*         q,
                                      (uint8_t*)q->e[codeword_idx],
                                      cfg->rnti,
                                      codeword_idx,
-                                     2 * (sf->tti % SRSRAN_NOF_SF_X_FRAME),
+                                     2 * pdsch_scrambling_sf(sf, cfg),
                                      q->cell.id,
                                      cfg->grant.tb[tb_idx].nof_bits);
 

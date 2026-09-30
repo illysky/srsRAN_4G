@@ -105,4 +105,7 @@ SRSRAN_API void srsran_pbch_mib_unpack(uint8_t* msg, srsran_cell_t* cell, uint32
 
 SRSRAN_API void srsran_pbch_mib_pack(srsran_cell_t* cell, uint32_t sfn, uint8_t* msg);
 
+/// As srsran_pbch_mib_pack, with schedulingInfoSIB1-BR-r13 (0: no SIB1-BR, i.e. no LTE-M) after the SFN
+SRSRAN_API void srsran_pbch_mib_pack_br(srsran_cell_t* cell, uint32_t sfn, uint32_t sched_info_sib1_br, uint8_t* msg);
+
 #endif // SRSRAN_PBCH_H

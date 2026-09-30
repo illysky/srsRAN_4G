@@ -165,6 +165,10 @@ add_executable(npbch_test npbch_test.c)
 target_link_libraries(npbch_test srsran_phy)
 add_lte_test(npbch_test npbch_test)
 
+add_executable(emtc_test emtc_test.c)
+target_link_libraries(emtc_test srsran_phy)
+add_lte_test(emtc_test emtc_test)
+
 add_executable(nbiot_inband_test nbiot_inband_test.c)
 target_link_libraries(nbiot_inband_test srsran_phy)
 add_lte_test(nbiot_inband_test nbiot_inband_test)

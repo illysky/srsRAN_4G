@@ -65,6 +65,11 @@ typedef struct SRSRAN_API {
     srsran_softbuffer_rx_t* rx[SRSRAN_MAX_CODEWORDS];
   } softbuffers;
 
+  // BL/CE (LTE-M): the scrambling of a block of N_acc subframes is that of subframe bl_ce_scrambling_sf of the frame
+  // (TS 36.211 6.3.1, see srsran_emtc_scrambling_sf)
+  bool     bl_ce_scrambling;
+  uint32_t bl_ce_scrambling_sf;
+
   bool     meas_evm_en;
   bool     meas_time_en;
   uint32_t meas_time_value;

@@ -66,6 +66,8 @@ typedef struct SRSRAN_API {
 
   srsran_cfr_cfg_t cfr_config;
 
+  uint32_t mib_sched_info_sib1_br; ///< MIB schedulingInfoSIB1-BR-r13: 0 unless the cell serves LTE-M
+
   cf_t*         sf_symbols[SRSRAN_MAX_PORTS];
   cf_t*         out_buffer[SRSRAN_MAX_PORTS];
   srsran_ofdm_t ifft[SRSRAN_MAX_PORTS];

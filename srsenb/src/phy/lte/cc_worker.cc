@@ -25,6 +25,7 @@
 #include "srsran/srsran.h"
 
 #include "srsenb/hdr/phy/lte/cc_worker.h"
+#include "srsenb/hdr/phy/lte/emtc_dl.h"
 #include "srsenb/hdr/phy/lte/nbiot_dl.h"
 
 #define Error(fmt, ...)                                                                                                \
@@ -131,6 +132,17 @@ void cc_worker::init(phy_common* phy_, uint32_t cc_idx_)
   if (srsran_enb_ul_set_cell(&enb_ul, cell, &phy->dmrs_pusch_cfg, nullptr)) {
     ERROR("Error initiating ENB UL");
     return;
+  }
+
+  // LTE-M on the first carrier: SIB1-BR scheduling in the MIB, and the BR downlink
+  if (cc_idx == 0 && phy->params.emtc_bcast) {
+    std::string err;
+    emtc = std::make_unique<emtc_dl>();
+    if (!emtc->init(phy->params.emtc_bcast, cell, logger, err)) {
+      srsran::console("LTE-M: %s\n", err.c_str());
+      exit(-1);
+    }
+    enb_dl.mib_sched_info_sib1_br = phy->params.emtc_bcast->sched.sched_info_sib1_br;
   }
 
   // NB-IoT in-band anchor on the first carrier
@@ -266,6 +278,11 @@ void cc_worker::work_dl(const srsran_dl_sf_cfg_t&            dl_sf_cfg,
 
   // Put pending PHICH HARQ ACK/NACK indications into subframe
   encode_phich(ul_grants.phich, ul_grants.nof_phich);
+
+  // LTE-M narrowbands: after the LTE channels, whose scheduler left them free
+  if (emtc && dl_sf.sf_type == SRSRAN_SF_NORM) {
+    emtc->put_sf(dl_sf.tti, enb_dl.sf_symbols);
+  }
 
   // NB-IoT anchor PRB: after the LTE channels (so the anchor is taken over as a whole), before the OFDM modulation
   if (nbiot && dl_sf.sf_type == SRSRAN_SF_NORM) {
