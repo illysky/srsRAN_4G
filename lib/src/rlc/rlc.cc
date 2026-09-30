@@ -177,6 +177,13 @@ void rlc::empty_queue()
   }
 }
 
+void rlc::empty_queue(uint32_t lcid)
+{
+  if (valid_lcid(lcid)) {
+    rlc_array.at(lcid)->empty_queue();
+  }
+}
+
 /*******************************************************************************
   PDCP interface (called from Stack thread and therefore no lock required)
 *******************************************************************************/

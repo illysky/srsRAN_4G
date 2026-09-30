@@ -425,6 +425,8 @@ bool ue::process_ce(srsran::sch_subh* subh, uint32_t grant_nof_prbs)
       if (sched->ue_exists(old_rnti)) {
         rrc->upd_user(rnti, old_rnti);
         rnti = old_rnti;
+        // TS 36.321 5.1.5: a random access with the C-RNTI MAC CE is only resolved by a UL grant on that C-RNTI
+        sched->ul_sr_info(0, rnti);
       } else {
         logger.warning("Updating user C-RNTI: rnti=0x%x already released.", old_rnti);
         // Disable scheduling for all bearers. The new rnti will be removed on msg3 timer expiry in the RRC

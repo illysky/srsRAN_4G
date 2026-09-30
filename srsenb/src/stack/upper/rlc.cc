@@ -101,9 +101,11 @@ void rlc::clear_buffer(uint16_t rnti)
 {
   pthread_rwlock_rdlock(&rwlock);
   if (users.count(rnti)) {
-    users[rnti].rlc->empty_queue();
-    for (int i = 0; i < SRSRAN_N_RADIO_BEARERS; i++) {
+    // SRBs keep their queue: a DL NAS message the MME sends just before the UE Context Release Command (the TAU
+    // accept of a TAU without active flag) must still reach the UE ahead of the RRCConnectionRelease
+    for (int i = srb_to_lcid(lte_srb::srb2) + 1; i < SRSRAN_N_RADIO_BEARERS; i++) {
       if (users[rnti].rlc->has_bearer(i)) {
+        users[rnti].rlc->empty_queue(i);
         mac->rlc_buffer_state(rnti, i, 0, 0);
       }
     }
