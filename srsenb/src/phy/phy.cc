@@ -20,8 +20,14 @@
  */
 
 #include "srsenb/hdr/phy/phy.h"
+#include "srsenb/hdr/phy/lte/nbiot_dl.h"
+#include "srsenb/hdr/phy/nbiot_prach_worker.h"
+extern "C" {
+#include "srsran/phy/phch/nbiot_ra.h"
+}
 #include "srsran/common/band_helper.h"
 #include "srsran/common/phy_cfg_nr_default.h"
+#include "srsran/common/standard_streams.h"
 #include "srsran/common/threads.h"
 #include <pthread.h>
 #include <sstream>
@@ -198,6 +204,60 @@ int phy::init_lte(const phy_args_t&            args,
   }
   prach.set_max_prach_offset_us(args.max_prach_offset_us);
 
+  if (not args.nbiot_config.empty() and not cfg.phy_cell_cfg.empty()) {
+    if (init_nbiot_prach(args, cfg) != SRSRAN_SUCCESS) {
+      return SRSRAN_ERROR;
+    }
+  }
+
+  return SRSRAN_SUCCESS;
+}
+
+int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
+{
+  nbiot::cell_config nb_cfg;
+  std::string        err;
+  if (not lte::nbiot_dl::load(args.nbiot_config, nb_cfg, err)) {
+    phy_log.error("NB-IoT: %s", err.c_str());
+    return SRSRAN_ERROR;
+  }
+
+  nbiot_nprach_params p = {};
+  p.lte_nof_prb         = cfg.phy_cell_cfg[0].cell.nof_prb;
+  p.anchor_prb          = nb_cfg.nbiot_prb;
+  p.periodicity_ms      = nb_cfg.sib2.nprach_periodicity_ms;
+  p.start_time_ms       = nb_cfg.sib2.nprach_start_time_ms;
+  p.nprach.cell_id      = nb_cfg.n_id_ncell;
+  p.nprach.format       = nb_cfg.sib2.nprach_cp_length_us > 100.0 ? 1 : 0;
+  p.nprach.n_rep        = nb_cfg.sib2.num_repetitions_per_preamble;
+  p.nprach.n_sc_offset  = nb_cfg.sib2.nprach_subcarrier_offset;
+  p.nprach.n_sc_nprach  = nb_cfg.sib2.nprach_num_subcarriers;
+
+  nbiot_prach.reset(new nbiot_prach_worker(phy_log));
+  if (nbiot_prach->init(p, PRACH_WORKER_THREAD_PRIO, err) != SRSRAN_SUCCESS) {
+    phy_log.error("NB-IoT NPRACH receiver: %s", err.c_str());
+    srsran::console("NB-IoT NPRACH receiver: %s\n", err.c_str());
+    nbiot_prach.reset();
+    return SRSRAN_ERROR;
+  }
+  nbiot_prach->set_callback([](const nbiot_nprach_detection& d) {
+    srsran::console("NB-IoT: NPRACH preamble %u at TTI %u (frame %u), ToA %.2f samples = %.1f us (timing advance %u), "
+                    "CFO %+.0f Hz, metric %.0f\n",
+                    d.n_init,
+                    d.tti,
+                    d.tti / 10,
+                    d.toa,
+                    d.toa / 1.92,
+                    srsran_nbiot_ta_from_toa(d.toa),
+                    d.cfo_hz,
+                    d.metric);
+  });
+  tx_rx.set_nbiot_prach(nbiot_prach.get());
+  srsran::console("NB-IoT: listening for NPRACH (period %u ms, start %u ms, %u subcarriers, %u repetitions)\n",
+                  p.periodicity_ms,
+                  p.start_time_ms,
+                  p.nprach.n_sc_nprach,
+                  p.nprach.n_rep);
   return SRSRAN_SUCCESS;
 }
 
@@ -211,6 +271,9 @@ void phy::stop()
       nr_workers->stop();
     }
     prach.stop();
+    if (nbiot_prach) {
+      nbiot_prach->stop();
+    }
 
     initialized = false;
   }

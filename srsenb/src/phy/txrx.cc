@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "srsenb/hdr/phy/txrx.h"
+#include "srsenb/hdr/phy/nbiot_prach_worker.h"
 #include "srsran/common/band_helper.h"
 #include "srsran/common/threads.h"
 #include "srsran/srsran.h"
@@ -210,6 +211,11 @@ void txrx::run_thread()
     // Trigger prach worker execution
     for (uint32_t cc = 0; cc < worker_com->get_nof_carriers_lte(); cc++) {
       prach->new_tti(cc, tti, buffer.get(worker_com->get_rf_port(cc), 0, worker_com->get_nof_ports(0)));
+    }
+
+    // NB-IoT NPRACH opportunities (in-band anchor of the first LTE carrier)
+    if (nbiot_prach != nullptr) {
+      nbiot_prach->new_tti(tti, buffer.get(worker_com->get_rf_port(0), 0, worker_com->get_nof_ports(0)));
     }
 
     // Set NR worker context and start

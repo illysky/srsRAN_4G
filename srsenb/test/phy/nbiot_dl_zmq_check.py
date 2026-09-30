@@ -10,6 +10,11 @@ this adds to the composer test: the wiring inside srsenb -- where in the pipelin
 hyper frame the composer is told, the SIB1/SIB2 content the eNB really built from the carrier file -- and the LTE side:
 the PRBs next to the anchor and the RBG the scheduler reserved.
 
+The uplink is checked the same way: the radio injects NPRACH preambles, synthesised by the independent generator
+nprach_ref.py at the eNB sample rate, at the subframes the specification puts NPRACH opportunities (period, start time
+from the carrier file), with delay, carrier offset, noise, two users at once and empty opportunities, and the detections
+srsenb prints must be exactly those: preamble, subframe, timing and frequency offset.
+
 Nothing in it knows how srsenb or the composer is implemented. Requires pyzmq and numpy; exits with 77 (skipped) if
 either is missing.
 
@@ -116,9 +121,16 @@ def conf_int(text, key):
 
 
 class Radio:
-    """The far end of srsenb's ZMQ radio: silence on the uplink, records the downlink."""
+    """The far end of srsenb's ZMQ radio: the uplink is silence or noise plus injected bursts, records the downlink.
 
-    def __init__(self):
+    bursts: list of (first sample index in the uplink stream, complex samples). Uplink stream sample 0 is the first
+    sample of TTI 10236, four subframes before TTI 0, which is where srsenb starts receiving."""
+
+    def __init__(self, bursts=(), noise_var=0.0, seed=1):
+        self.bursts = sorted(bursts, key=lambda b: b[0])
+        self.noise_var = noise_var
+        self.rng = np.random.default_rng(seed)
+        self.ul_chunks = 0
         self.ctx = zmq.Context()
         self.stop = threading.Event()
         self.chunks = []
@@ -134,12 +146,29 @@ class Radio:
         s.setsockopt(zmq.RCVTIMEO, 200)
         s.bind(RX_PORT)
         silence = bytes(SF_LEN * 8)
+        k = 0
         while not self.stop.is_set():
             try:
                 s.recv()
             except zmq.Again:
                 continue
-            s.send(silence)
+            lo, hi = k * SF_LEN, (k + 1) * SF_LEN
+            if not self.bursts and self.noise_var == 0.0:
+                s.send(silence)
+            else:
+                blk = np.zeros(SF_LEN, dtype=np.complex64)
+                if self.noise_var > 0.0:
+                    sig = math.sqrt(self.noise_var / 2.0)
+                    blk += (self.rng.normal(0, sig, SF_LEN) + 1j * self.rng.normal(0, sig, SF_LEN)).astype(np.complex64)
+                for start, x in self.bursts:
+                    if start >= hi:
+                        break
+                    if start + len(x) > lo:
+                        a, b = max(lo, start), min(hi, start + len(x))
+                        blk[a - lo:b - lo] += x[a - start:b - start]
+                s.send(blk.tobytes())
+            k += 1
+            self.ul_chunks = k
         s.close(0)
 
     def _downlink(self):
@@ -166,6 +195,47 @@ class Radio:
         return np.frombuffer(b''.join(self.chunks), dtype=np.complex64)
 
 
+# NPRACH injection plan: one entry per opportunity, repeating. Each preamble is (n_init, delay in samples at 1.92 MS/s,
+# carrier frequency offset in Hz, SNR per sample after decimation to 1.92 MS/s in dB). An empty entry is an opportunity
+# where nobody transmits.
+NPRACH_PLAN = [
+    [(0, 0.0, 0.0, 12.0)],
+    [(5, 37.0, 183.0, 10.0)],
+    [],
+    [(11, 3.25, -297.0, 12.0)],
+    [(7, 100.0, 51.0, 3.0)],
+    [(2, 10.0, 127.0, 12.0), (9, 60.5, -203.0, 12.0)],
+    [(4, 1.0, 0.0, 6.0)],
+    [],
+]
+
+
+def nprach_bursts(ref, nprach, nof_prb, anchor, n_opps, fs):
+    """(bursts, expected) for n_opps opportunities. expected: (tti, n_init, toa, cfo, first stream sample, last)"""
+    fmt = 1 if nprach['cp_us'] > 100.0 else 0
+    offset_hz = (2 * anchor + 1 - nof_prb) * 90000
+    ratio = fs // 1920000
+    bursts, expected = [], []
+    for o in range(n_opps):
+        t_ms = nprach['start'] + nprach['period'] * o     # since TTI 0 of hyper frame 0
+        tti = t_ms % 10240
+        # spec: start_time after the first subframe of a frame with n_f mod (period / 10) == 0
+        assert ((t_ms - nprach['start']) // 10) % (nprach['period'] // 10) == 0
+        base = (t_ms + 4) * SF_LEN                           # stream sample 0 is TTI 10236
+        for (n_init, delay, cfo, snr_db) in NPRACH_PLAN[o % len(NPRACH_PLAN)]:
+            x, _ = ref.preamble(fs, fmt, nprach['n_rep'], nprach['cell_id'], n_init, nprach['sc_offset'])
+            d = int(round(delay * ratio))
+            idx = base + d + np.arange(len(x), dtype=np.int64)
+            mix = ((offset_hz * idx) % fs) / fs
+            # the noise floor is fixed (variance = ratio per sample), which is unit variance after decimation, so the
+            # amplitude sets the SNR of this burst
+            amp = 10.0 ** (snr_db / 20.0)
+            y = amp * x * np.exp(2j * np.pi * (mix + cfo * idx / fs))
+            bursts.append((base + d, y.astype(np.complex64)))
+            expected.append((tti, n_init, delay, cfo, base, base + d + len(x)))
+    return bursts, expected
+
+
 ENB_CONF = """[enb]
 enb_id = 0x19C
 mcc = 234
@@ -188,7 +258,7 @@ device_name = zmq
 device_args = fail_on_disconnect=false,tx_port=tcp://*:2010,rx_port=tcp://localhost:2011,id=enb,base_srate=7.68e6
 
 [log]
-all_level = warning
+all_level = %(level)s
 filename = %(log)s
 file_max_size = -1
 
@@ -205,7 +275,8 @@ def make_config_dir(src_dir, nof_prb, earfcn, pci):
     d = tempfile.mkdtemp(prefix='srsenb_nbiot_cfg_')
     atexit.register(shutil.rmtree, d, True)
     with open(os.path.join(d, 'enb.conf'), 'w') as f:
-        f.write(ENB_CONF % {'nof_prb': nof_prb, 'log': os.path.join(d, 'enb.log')})
+        f.write(ENB_CONF % {'nof_prb': nof_prb, 'log': os.path.join(d, 'enb.log'),
+                            'level': os.environ.get('NBIOT_TEST_LOG_LEVEL', 'warning')})
     for name in ('sib', 'rb'):
         shutil.copy(os.path.join(src_dir, name + '.conf.example'), os.path.join(d, name + '.conf'))
     rr = open(os.path.join(src_dir, 'rr.conf.example')).read()
@@ -216,6 +287,59 @@ def make_config_dir(src_dir, nof_prb, earfcn, pci):
     with open(os.path.join(d, 'rr.conf'), 'w') as f:
         f.write(rr)
     return os.path.join(d, 'enb.conf')
+
+
+def check_nprach(console, expected, nprach, chunks_served, first_detect_margin):
+    """Every injected preamble that srsenb had time to process must be reported once with the right subframe, preamble
+    identifier, arrival time and frequency offset, and nothing else may be reported."""
+    det = []
+    for m in re.finditer(r'NB-IoT: NPRACH preamble (\d+) at TTI (\d+) \(frame (\d+)\), ToA ([-\d.]+) samples = ([-\d.]+) us '
+                         r'\(timing advance (\d+)\), CFO ([+-]\d+) Hz, metric (\d+)', console):
+        det.append({'n_init': int(m.group(1)), 'tti': int(m.group(2)), 'toa': float(m.group(4)), 'ta': int(m.group(6)),
+                    'cfo': float(m.group(7)), 'metric': float(m.group(8))})
+    ok = True
+    if not re.search(r'NB-IoT: listening for NPRACH', console):
+        print('FAIL: srsenb did not report starting the NPRACH receiver')
+        ok = False
+
+    # opportunities fully received, with a margin for the detector thread
+    served = chunks_served - first_detect_margin
+    due = [e for e in expected if e[5] + 1200 * SF_LEN // 1000 < served * SF_LEN]
+    matched = set()
+    worst_toa = worst_cfo = 0.0
+    for (tti, n_init, delay, cfo, base, end) in due:
+        hits = [i for i, d in enumerate(det) if d['tti'] == tti and d['n_init'] == n_init and i not in matched]
+        if not hits:
+            print('FAIL: preamble %d at TTI %d (delay %.2f, cfo %+.0f) was not detected' % (n_init, tti, delay, cfo))
+            ok = False
+            continue
+        i = hits[0]
+        matched.add(i)
+        et, ec = det[i]['toa'] - delay, det[i]['cfo'] - cfo
+        if det[i]['ta'] != max(0, int(math.floor(det[i]['toa'] + 0.5))):
+            print('FAIL: timing advance %d for a ToA of %.2f samples' % (det[i]['ta'], det[i]['toa']))
+            ok = False
+        worst_toa, worst_cfo = max(worst_toa, abs(et)), max(worst_cfo, abs(ec))
+        if abs(et) > 0.25 or abs(ec) > 15.0:
+            print('FAIL: preamble %d at TTI %d: toa %.2f (want %.2f), cfo %+.0f (want %+.0f)' %
+                  (n_init, tti, det[i]['toa'], delay, det[i]['cfo'], cfo))
+            ok = False
+    extra = [d for i, d in enumerate(det) if i not in matched]
+    # a detection of an injected burst that was too late to count as "due" is not extra
+    allowed = {(e[0], e[1]) for e in expected}
+    extra = [d for d in extra if (d['tti'], d['n_init']) not in allowed]
+    for d in extra[:8]:
+        print('FAIL: unexpected detection %s' % d)
+    if extra:
+        ok = False
+    distinct_users = len({(e[1]) for e in due})
+    print('NPRACH: %d preambles injected in %d opportunities that srsenb had processed, %d detections (%d unexpected); '
+          'worst ToA error %.2f samples, worst CFO error %.1f Hz, %d preamble identifiers' %
+          (len(due), len({e[0] + 10240 * 0 for e in due}), len(det), len(extra), worst_toa, worst_cfo, distinct_users))
+    if len(due) < 8:
+        print('FAIL: too few NPRACH preambles were exercised (%d)' % len(due))
+        ok = False
+    return ok
 
 
 def main():
@@ -253,7 +377,14 @@ def main():
             return 1
         sib1, sib2 = open(sib1_f, 'rb').read(), open(sib2_f, 'rb').read()
 
-    radio = Radio()
+    nprach = {'period': conf_int(nb, 'periodicity_ms'), 'start': conf_int(nb, 'start_time_ms'),
+              'sc_offset': conf_int(nb, 'subcarrier_offset'), 'n_sc': conf_int(nb, 'nof_subcarriers'),
+              'n_rep': conf_int(nb, 'num_repetitions_per_preamble'), 'cell_id': pci,
+              'cp_us': float(re.search(r'cp_length_us\s*=\s*([\d.]+)', nb).group(1))}
+    import nprach_ref
+    n_opps = int(seconds * 1000 / nprach['period']) + 2
+    bursts, expected = nprach_bursts(nprach_ref, nprach, nof_prb, anchor, n_opps, SF_LEN * 1000)
+    radio = Radio(bursts, noise_var=float((SF_LEN * 1000) // 1920000))
     radio.start()
     log = tempfile.NamedTemporaryFile(prefix='srsenb_nbiot_', suffix='.log', delete=False)
     enb = subprocess.Popen([srsenb, enb_conf, '--expert.nbiot_config=' + nb_conf, '--expert.lte_sample_rates=true'],
@@ -273,6 +404,11 @@ def main():
         time.sleep(0.5)
     log.close()
     console = open(log.name).read()
+    if os.environ.get('NBIOT_TEST_LOG_LEVEL'):
+        lf = os.path.join(os.path.dirname(enb_conf), 'enb.log')
+        if os.path.exists(lf):
+            print('--- NB-IoT lines of enb.log')
+            print(''.join(l for l in open(lf) if 'NPRACH' in l or 'NB-IoT' in l))
     if 'eNodeB started' not in console:
         print('FAIL: srsenb did not start:\n%s' % console[-2000:])
         return 1
@@ -385,6 +521,10 @@ def main():
     if partners and leak:
         ok = False
         print('FAIL: LTE data or NB-IoT leakage next to the anchor')
+
+    # ---- uplink: NPRACH detections printed by srsenb against what was injected
+    ok = check_nprach(console, expected, nprach, radio.ul_chunks, first_detect_margin=1000) and ok
+
     os.unlink(log.name)
     print('PASS' if ok else 'FAIL')
     return 0 if ok else 1

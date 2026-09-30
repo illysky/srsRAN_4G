@@ -32,8 +32,11 @@
 #include "srsran/radio/radio.h"
 #include "srsran/srslog/srslog.h"
 #include "txrx.h"
+#include <memory>
 
 namespace srsenb {
+
+class nbiot_prach_worker;
 
 class phy final : public enb_phy_base,
                   public phy_interface_stack_lte,
@@ -104,6 +107,7 @@ private:
   std::unique_ptr<nr::worker_pool> nr_workers;
   phy_common                       workers_common;
   prach_worker_pool                prach;
+  std::unique_ptr<nbiot_prach_worker> nbiot_prach;
   txrx                             tx_rx;
 
   bool initialized = false;
@@ -112,6 +116,7 @@ private:
   common_cfg_t       common_cfg = {};
 
   void parse_common_config(const phy_cfg_t& cfg);
+  int  init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg);
   int  init_lte(const phy_args_t&            args,
                 const phy_cfg_t&             cfg,
                 srsran::radio_interface_phy* radio_,

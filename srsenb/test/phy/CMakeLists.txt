@@ -101,6 +101,11 @@ add_lte_test(enb_phy_test_tm1_ca_cs_ho enb_phy_test --duration=1000 --nof_enb_ce
 # 6 Carrier eNb shall end in error without breaking the PHY
 add_lte_test(enb_phy_test_exceed_nof_carriers enb_phy_test --duration=${ENB_PHY_TEST_DURATION} --nof_enb_cells=6 --ue_cell_list=1,5 --ack_mode=cs --cell.nof_prb=6 --tm=4)
 
+# NB-IoT NPRACH opportunity timing
+add_executable(nbiot_prach_opportunity_test nbiot_prach_opportunity_test.cc)
+target_link_libraries(nbiot_prach_opportunity_test srsenb_phy srsran_phy ${CMAKE_THREAD_LIBS_INIT})
+add_test(nbiot_prach_opportunity_test nbiot_prach_opportunity_test)
+
 # NB-IoT in-band anchor of a running srsenb, read back from the ZMQ radio and compared with a model written from the
 # specification. Needs python3 with pyzmq and numpy (skipped otherwise) and the NB-IoT tools (libconfig++).
 find_package(Python3 COMPONENTS Interpreter)
