@@ -24,6 +24,7 @@ set(SOURCES
         lte/sf_worker.cc
         lte/worker_pool.cc
         nbiot_mac.cc
+        nbiot_msg3_worker.cc
         nbiot_prach_worker.cc
         nr/slot_worker.cc
         nr/worker_pool.cc
@@ -37,7 +38,7 @@ add_library(srsenb_phy STATIC ${SOURCES})
 # In-band NB-IoT anchor: the composer lives in srsran_phy, the system information builder in lib/examples
 # (srsenb needs libconfig++ anyway, for its own configuration files)
 target_include_directories(srsenb_phy PUBLIC ${CMAKE_SOURCE_DIR}/lib/examples)
-target_link_libraries(srsenb_phy nbiot_sib_builder)
+target_link_libraries(srsenb_phy nbiot_sib_builder rrc_asn1)
 
 if (ENABLE_GUI AND SRSGUI_FOUND)
     target_link_libraries(srsenb_phy ${SRSGUI_LIBRARIES})

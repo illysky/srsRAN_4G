@@ -35,6 +35,7 @@
 namespace srsenb {
 
 class nbiot_prach_worker;
+class nbiot_msg3_worker;
 
 class txrx final : public srsran::thread
 {
@@ -48,6 +49,7 @@ public:
             uint32_t                     prio);
   bool set_nr_workers(nr::worker_pool* nr_workers_);
   void set_nbiot_prach(nbiot_prach_worker* w) { nbiot_prach = w; }
+  void set_nbiot_msg3(nbiot_msg3_worker* w) { nbiot_msg3 = w; }
   void stop();
 
 private:
@@ -60,6 +62,7 @@ private:
   nr::worker_pool*             nr_workers  = nullptr;
   prach_worker_pool*           prach       = nullptr;
   nbiot_prach_worker*          nbiot_prach = nullptr;
+  nbiot_msg3_worker*           nbiot_msg3  = nullptr;
   phy_common*                  worker_com  = nullptr;
   srsran::channel_ptr          ul_channel  = nullptr;
 

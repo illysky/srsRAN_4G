@@ -22,6 +22,7 @@
 #include "srsenb/hdr/phy/phy.h"
 #include "srsenb/hdr/phy/lte/nbiot_dl.h"
 #include "srsenb/hdr/phy/nbiot_mac.h"
+#include "srsenb/hdr/phy/nbiot_msg3_worker.h"
 #include "srsenb/hdr/phy/nbiot_prach_worker.h"
 extern "C" {
 #include "srsran/phy/phch/nbiot_ra.h"
@@ -285,6 +286,56 @@ int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
     ra->preamble_detected(d);
   });
   tx_rx.set_nbiot_prach(nbiot_prach.get());
+
+  // Msg3: the NPUSCH each response grants
+  nbiot_msg3.reset(new nbiot_msg3_worker(phy_log));
+  if (nbiot_msg3->init(cfg.phy_cell_cfg[0].cell.nof_prb, nb_cfg.nbiot_prb, PRACH_WORKER_THREAD_PRIO, err) !=
+      SRSRAN_SUCCESS) {
+    phy_log.error("NB-IoT Msg3 receiver: %s", err.c_str());
+    srsran::console("NB-IoT Msg3 receiver: %s\n", err.c_str());
+    nbiot_msg3.reset();
+    return SRSRAN_ERROR;
+  }
+  nbiot_msg3_worker* m3            = nbiot_msg3.get();
+  const uint32_t     cell_id       = nb_cfg.n_id_ncell;
+  const bool         group_hopping = nb_cfg.sib2.group_hopping_enabled;
+  const uint32_t     delta_ss      = nb_cfg.sib2.group_assignment_npusch;
+  ra->set_response_callback([m3, cell_id, group_hopping, delta_ss](const nbiot_ra_response& r) {
+    nbiot_npusch_expect e;
+    uint32_t            k0 = 0;
+    if (srsran_nbiot_msg3_grant_to_npusch(&r.grant, r.tc_rnti, cell_id, &e.cfg, &k0) != SRSRAN_SUCCESS) {
+      srsran::console("NB-IoT: Msg3 grant of TC-RNTI 0x%04x cannot be received\n", r.tc_rnti);
+      return;
+    }
+    // TS 36.213 16.5.1: the first uplink slot after the end of subframe n + k0, n the last RAR NPDSCH subframe
+    e.start_sf          = r.npdsch_end + k0 + 1;
+    e.cfg.frame         = (uint32_t)((e.start_sf / 10) % 1024);
+    e.cfg.slot          = (uint32_t)(2 * (e.start_sf % 10));
+    e.cfg.group_hopping = group_hopping;
+    e.cfg.delta_ss      = delta_ss;
+    e.rnti              = r.tc_rnti;
+    e.preamble          = r.preamble;
+    std::string why;
+    if (not m3->expect(e, why)) {
+      srsran::console("NB-IoT: Msg3 of TC-RNTI 0x%04x not expected: %s\n", r.tc_rnti, why.c_str());
+    }
+  });
+  nbiot_msg3->set_callback([ra](const nbiot_npusch_result& res) {
+    srsran::console("NB-IoT: Msg3 of TC-RNTI 0x%04x (preamble %u, subframe %llu, %u RU x %u): CRC %s, SNR %.1f dB, "
+                    "CFO %+.0f Hz\n",
+                    res.req.rnti,
+                    res.req.preamble,
+                    (unsigned long long)res.req.start_sf,
+                    res.req.cfg.n_ru,
+                    res.req.cfg.n_rep,
+                    res.res.crc_ok ? "OK" : "KO",
+                    res.res.snr_db,
+                    res.res.cfo_hz);
+    if (res.res.crc_ok) {
+      ra->msg3_received(res.req.rnti, res.tb.data(), (uint32_t)res.tb.size());
+    }
+  });
+  tx_rx.set_nbiot_msg3(nbiot_msg3.get());
   srsran::console("NB-IoT: listening for NPRACH (period %u ms, start %u ms, %u subcarriers, %u repetitions)\n",
                   p.periodicity_ms,
                   p.start_time_ms,
@@ -305,6 +356,9 @@ void phy::stop()
     prach.stop();
     if (nbiot_prach) {
       nbiot_prach->stop();
+    }
+    if (nbiot_msg3) {
+      nbiot_msg3->stop();
     }
 
     initialized = false;

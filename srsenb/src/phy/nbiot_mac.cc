@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/phy/nbiot_mac.h"
+#include "srsran/asn1/rrc_nbiot.h"
 #include "srsran/common/standard_streams.h"
 #include <algorithm>
 #include <cmath>
@@ -41,6 +42,7 @@ bool nbiot_ra_config::from_cell(const nbiot::cell_config& cell, nbiot_ra_config&
   out.nprach_format = cell.sib2.nprach_cp_length_us > 100.0 ? 1 : 0;
   out.r_max         = cell.sib2.npdcch_num_repetitions_ra;
   out.window_pp     = cell.sib2.ra_response_window;
+  out.contention_pp = cell.sib2.mac_contention_timer;
 
   const double g = cell.sib2.npdcch_start_sf_css_ra;
   out.g_halves   = (uint32_t)std::lround(2.0 * g);
@@ -318,9 +320,350 @@ void nbiot_mac::preamble_detected(const nbiot_nprach_detection& d)
                 (unsigned long long)r.npdcch_end,
                 (unsigned long long)r.npdsch_start,
                 (unsigned long long)r.npdsch_end);
+    if (on_response) {
+      on_response(r);
+    }
   } else {
     srsran::console("NB-IoT: preamble %u not answered: %s\n", d.n_init, why.c_str());
     logger.warning("NB-IoT RAR: preamble %u not answered: %s", d.n_init, why.c_str());
+  }
+}
+
+namespace {
+
+std::string hex(const uint8_t* p, uint32_t n)
+{
+  std::string s;
+  char        b[4];
+  for (uint32_t i = 0; i < n; i++) {
+    snprintf(b, sizeof(b), "%02x", p[i]);
+    s += b;
+  }
+  return s;
+}
+
+/// UL-CCCH-Message-NB as JSON, or empty if it does not decode
+std::string decode_ul_ccch_nb(const uint8_t* p, uint32_t n)
+{
+  asn1::rrc::ul_ccch_msg_nb_s msg;
+  asn1::cbit_ref               bref(p, n);
+  if (msg.unpack(bref) != asn1::SRSASN_SUCCESS) {
+    return {};
+  }
+  asn1::json_writer js;
+  msg.to_json(js);
+  return js.to_string();
+}
+
+/// DL-CCCH-Message-NB with RRCConnectionSetup-NB: SRB1 and MAC by default, and the dedicated physical layer
+int pack_rrc_conn_setup_nb(uint8_t* out, uint32_t max)
+{
+  asn1::rrc::dl_ccch_msg_nb_s msg;
+  auto&                       setup = msg.msg.set_c1().set_rrc_conn_setup_r13();
+  setup.rrc_transaction_id          = 0;
+  auto& rr                          = setup.crit_exts.set_c1().set_rrc_conn_setup_r13().rr_cfg_ded_r13;
+
+  rr.srb_to_add_mod_list_r13_present = true;
+  auto& srb                          = rr.srb_to_add_mod_list_r13[0];
+  srb.rlc_cfg_r13_present            = true;
+  srb.rlc_cfg_r13.set_default_value();
+  srb.lc_ch_cfg_r13_present = true;
+  srb.lc_ch_cfg_r13.set_default_value();
+
+  rr.mac_main_cfg_r13_present = true;
+  rr.mac_main_cfg_r13.set_default_value_r13();
+
+  rr.phys_cfg_ded_r13_present          = true;
+  auto& phy                            = rr.phys_cfg_ded_r13;
+  phy.npdcch_cfg_ded_r13_present       = true;
+  phy.npdcch_cfg_ded_r13.npdcch_num_repeats_r13.value =
+      asn1::rrc::npdcch_cfg_ded_nb_r13_s::npdcch_num_repeats_r13_opts::r1;
+  phy.npdcch_cfg_ded_r13.npdcch_start_sf_uss_r13.value =
+      asn1::rrc::npdcch_cfg_ded_nb_r13_s::npdcch_start_sf_uss_r13_opts::v8;
+  phy.npdcch_cfg_ded_r13.npdcch_offset_uss_r13.value =
+      asn1::rrc::npdcch_cfg_ded_nb_r13_s::npdcch_offset_uss_r13_opts::zero;
+  phy.npusch_cfg_ded_r13_present                        = true;
+  phy.npusch_cfg_ded_r13.ack_nack_num_repeats_r13_present = true;
+  phy.npusch_cfg_ded_r13.ack_nack_num_repeats_r13.value   = asn1::rrc::ack_nack_num_repeats_nb_r13_opts::r1;
+  phy.npusch_cfg_ded_r13.npusch_all_symbols_r13_present   = true;
+  phy.npusch_cfg_ded_r13.npusch_all_symbols_r13           = true;
+  phy.ul_pwr_ctrl_ded_r13_present                         = true;
+  phy.ul_pwr_ctrl_ded_r13.p0_ue_npusch_r13                = 0;
+
+  asn1::bit_ref bref(out, max);
+  if (msg.pack(bref) != asn1::SRSASN_SUCCESS) {
+    return -1;
+  }
+  return bref.distance_bytes();
+}
+
+} // namespace
+
+bool nbiot_mac::plan_css_dl(uint16_t                     rnti,
+                            const srsran_nbiot_dci_n1_t& dci,
+                            const uint8_t*               pdu,
+                            uint32_t                     tbs,
+                            uint64_t                     t_min,
+                            uint64_t                     t_max,
+                            dl_alloc&                    out,
+                            std::string&                 why)
+{
+  const uint64_t        now = srsran_nbiot_dl_sched_now(sched);
+  srsran_nbiot_layout_t layout;
+  if (now == 0 || !srsran_nbiot_dl_sched_get_layout(sched, &layout)) {
+    cnt.no_layout++;
+    why = "the downlink has not started";
+    return false;
+  }
+  uint8_t dci_bits[SRSRAN_NBIOT_DCI_LEN];
+  if (srsran_nbiot_dci_n1_pack(&dci, dci_bits) != SRSRAN_SUCCESS) {
+    why = "internal: DCI N1 packing";
+    return false;
+  }
+  const uint32_t n_sf  = srsran_nbiot_npdsch_n_sf(dci.i_sf);
+  const uint32_t n_rep = srsran_nbiot_npdsch_n_rep(dci.i_rep);
+  const int      k0d   = srsran_nbiot_npdsch_k0(dci.i_delay, cfg.r_max);
+  if (n_sf == 0 || n_rep == 0 || k0d < 0 || srsran_nbiot_npdsch_tbs(dci.i_mcs, dci.i_sf) != tbs) {
+    why = "internal: NPDSCH parameters";
+    return false;
+  }
+
+  const uint64_t min_t = now + cfg.lead_sf;
+  t_min                = std::max(t_min, min_t);
+
+  uint32_t            period = 0;
+  srsran_nbiot_plan_t pc, pd;
+  bool                found = false;
+  while (true) {
+    const uint64_t k0 = srsran_nbiot_search_space_start(cfg.r_max, cfg.g_halves, cfg.offset_eighths, t_min, &period);
+    if (k0 > t_max) {
+      break;
+    }
+    if (srsran_nbiot_plan_npdcch(&layout, k0, cfg.r_max, &pc) != SRSRAN_SUCCESS ||
+        srsran_nbiot_plan_npdsch(&layout, pc.t[pc.nof_sf - 1], (uint32_t)k0d, n_sf, n_rep, &pd) != SRSRAN_SUCCESS) {
+      why = "cannot plan the transmission";
+      return false;
+    }
+    bool free_sf = true;
+    for (uint32_t i = 0; i < pc.nof_sf && free_sf; i++) {
+      free_sf = pc.t[i] >= min_t && !srsran_nbiot_dl_sched_busy(sched, pc.t[i]);
+    }
+    for (uint32_t i = 0; i < pd.nof_sf && free_sf; i++) {
+      free_sf = !srsran_nbiot_dl_sched_busy(sched, pd.t[i]);
+    }
+    if (free_sf) {
+      found = true;
+      break;
+    }
+    t_min = k0 + 1;
+  }
+  if (!found) {
+    cnt.late++;
+    why = "no search space start left in [" + std::to_string(t_min) + ", " + std::to_string(t_max) + "] (now " +
+          std::to_string(now) + ")";
+    return false;
+  }
+
+  uint8_t e[SRSRAN_NBIOT_DL_SCHED_MAX_E];
+  if (srsran_nbiot_npdcch_encode(&dlch, dci_bits, SRSRAN_NBIOT_DCI_LEN, rnti, e) != SRSRAN_SUCCESS ||
+      srsran_nbiot_dl_sched_add_npdcch(sched, e, srsran_nbiot_dlch_bits_per_sf(&dlch), &pc, min_t) != SRSRAN_SUCCESS) {
+    cnt.no_room++;
+    why = "the downlink schedule refused the NPDCCH";
+    return false;
+  }
+  if (n_sf * srsran_nbiot_dlch_bits_per_sf(&dlch) > (uint32_t)SRSRAN_NBIOT_DL_SCHED_MAX_E ||
+      srsran_nbiot_npdsch_encode(&dlch, pdu, tbs, n_sf, e) != SRSRAN_SUCCESS ||
+      srsran_nbiot_dl_sched_add_npdsch(sched, e, n_sf * srsran_nbiot_dlch_bits_per_sf(&dlch), rnti, n_sf, &pd, min_t) !=
+          SRSRAN_SUCCESS) {
+    cnt.no_room++;
+    why = "the downlink schedule refused the NPDSCH";
+    return false;
+  }
+  out.npdcch_start = pc.t[0];
+  out.npdcch_end   = pc.t[pc.nof_sf - 1];
+  out.npdsch_start = pd.t[0];
+  out.npdsch_end   = pd.t[pd.nof_sf - 1];
+  return true;
+}
+
+bool nbiot_mac::send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_len, std::string& why)
+{
+  std::lock_guard<std::mutex> guard(lock);
+  if (!initiated) {
+    why = "not initialised";
+    return false;
+  }
+  if (ccch_len < 6) {
+    why = "CCCH SDU shorter than the contention resolution identity";
+    return false;
+  }
+
+  uint8_t   rrc[64];
+  const int rrc_len = pack_rrc_conn_setup_nb(rrc, sizeof(rrc));
+  if (rrc_len <= 0 || rrc_len >= 128) {
+    why = "internal: RRCConnectionSetup-NB packing";
+    return false;
+  }
+
+  // Smallest transport block in the fewest subframes that holds CE subheader, CCCH subheader, identity and SDU at a
+  // code rate the UE decodes in one repetition
+  const uint32_t need  = 2 + 6 + (uint32_t)rrc_len;
+  const uint32_t e_sf  = srsran_nbiot_dlch_bits_per_sf(&dlch);
+  int            i_sf  = -1, i_tbs = -1;
+  uint32_t       tbs   = 0;
+  for (uint32_t s = 0; s < 8 && i_sf < 0; s++) {
+    for (uint32_t t = 0; t < 13; t++) {
+      const int b = srsran_nbiot_npdsch_tbs(t, s);
+      if (b >= (int)need * 8 && (b + 24) * 10 <= (int)(srsran_nbiot_npdsch_n_sf(s) * e_sf) * 7) {
+        i_sf  = (int)s;
+        i_tbs = (int)t;
+        tbs   = (uint32_t)b;
+        break;
+      }
+    }
+  }
+  if (i_sf < 0) {
+    why = "no NPDSCH transport block fits " + std::to_string(need) + " bytes";
+    return false;
+  }
+
+  // MAC PDU (36.321 6.1.2): UE Contention Resolution Identity CE (LCID 28), then the CCCH SDU; spare room is padding,
+  // one or two padding subheaders in front, or a padding subheader last behind a CCCH subheader with a length
+  uint8_t        pdu[SRSRAN_NBIOT_DL_SCHED_MAX_E / 8] = {};
+  const uint32_t tb   = tbs / 8;
+  const uint32_t pad  = tb - need;
+  uint32_t       p    = 0;
+  if (pad <= 2) {
+    for (uint32_t i = 0; i < pad; i++) {
+      pdu[p++] = 0x3F;
+    }
+    pdu[p++] = 0x3C;
+    pdu[p++] = 0x00;
+  } else {
+    pdu[p++] = 0x3C;
+    pdu[p++] = 0x20;
+    pdu[p++] = (uint8_t)rrc_len;
+    pdu[p++] = 0x1F;
+  }
+  memcpy(pdu + p, ccch, 6);
+  p += 6;
+  memcpy(pdu + p, rrc, rrc_len);
+  p += rrc_len;
+  if (p > tb) {
+    why = "internal: Msg4 PDU layout";
+    return false;
+  }
+
+  srsran_nbiot_dci_n1_t dci = {};
+  dci.i_delay               = 0;
+  dci.i_sf                  = (uint32_t)i_sf;
+  dci.i_mcs                 = (uint32_t)i_tbs;
+  dci.i_rep                 = 0;
+  dci.ndi                   = 0;
+  dci.harq_ack_res          = 0;
+  dci.dci_rep               = (uint32_t)srsran_nbiot_dci_rep_for_rmax(cfg.r_max);
+
+  uint32_t period = 0;
+  srsran_nbiot_search_space_start(cfg.r_max, cfg.g_halves, cfg.offset_eighths, 0, &period);
+  const uint64_t now = srsran_nbiot_dl_sched_now(sched);
+  dl_alloc       a;
+  if (!plan_css_dl(tc_rnti, dci, pdu, tbs, now, now + (uint64_t)cfg.contention_pp * period / 2, a, why)) {
+    return false;
+  }
+  cnt.msg4++;
+  srsran::console("NB-IoT: Msg4 to TC-RNTI 0x%04x: RRCConnectionSetup-NB %d bytes, TBS %u (I_TBS %d, I_SF %d), "
+                  "NPDCCH %llu..%llu, NPDSCH %llu..%llu: %s\n",
+                  tc_rnti,
+                  rrc_len,
+                  tbs,
+                  i_tbs,
+                  i_sf,
+                  (unsigned long long)a.npdcch_start,
+                  (unsigned long long)a.npdcch_end,
+                  (unsigned long long)a.npdsch_start,
+                  (unsigned long long)a.npdsch_end,
+                  hex(pdu, tb).c_str());
+  logger.info("NB-IoT Msg4 TC-RNTI 0x%04x TBS %u NPDSCH %llu..%llu",
+              tc_rnti,
+              tbs,
+              (unsigned long long)a.npdsch_start,
+              (unsigned long long)a.npdsch_end);
+  return true;
+}
+
+void nbiot_mac::msg3_received(uint16_t tc_rnti, const uint8_t* pdu, uint32_t len)
+{
+  srsran::console("NB-IoT: Msg3 from TC-RNTI 0x%04x: %s\n", tc_rnti, hex(pdu, len).c_str());
+
+  // UL-SCH subheaders R/F2/E/LCID [F/L(7) | F/L(15) | L(16)] (TS 36.321 6.1.2); the last one has no length
+  uint32_t pos = 0;
+  struct sub {
+    uint32_t lcid, len;
+    bool     last;
+  };
+  std::vector<sub> subs;
+  while (pos < len) {
+    const uint8_t h    = pdu[pos++];
+    const bool    f2   = (h >> 6) & 1;
+    const bool    more = (h >> 5) & 1;
+    sub           s    = {h & 0x1fu, 0, !more};
+    if (more) {
+      if (pos >= len) {
+        srsran::console("NB-IoT: Msg3 header runs past the PDU\n");
+        return;
+      }
+      if (f2) {
+        s.len = ((uint32_t)pdu[pos] << 8) | pdu[pos + 1];
+        pos += 2;
+      } else if (pdu[pos] & 0x80) {
+        s.len = (((uint32_t)pdu[pos] & 0x7f) << 8) | pdu[pos + 1];
+        pos += 2;
+      } else {
+        s.len = pdu[pos++];
+      }
+    }
+    subs.push_back(s);
+    if (s.last) {
+      break;
+    }
+  }
+  for (const sub& s : subs) {
+    uint32_t n = s.last ? len - pos : s.len;
+    if (pos + n > len) {
+      srsran::console("NB-IoT: Msg3 subheader LCID %u length %u runs past the PDU\n", s.lcid, n);
+      return;
+    }
+    if (s.lcid == 0) {
+      // The DPR MAC control element sits in front of the CCCH SDU, under the same subheader (36.321 6.1.3.10).
+      // PER decodes almost anything, so the offset with the DPR is tried first.
+      bool decoded = false;
+      for (uint32_t skip : {1u, 0u}) {
+        if (skip >= n) {
+          continue;
+        }
+        std::string js = decode_ul_ccch_nb(pdu + pos + skip, n - skip);
+        if (not js.empty()) {
+          if (skip) {
+            const uint8_t dpr = pdu[pos];
+            srsran::console("NB-IoT: Msg3 DPR: PH %u, DV index %u\n", (dpr >> 4) & 3u, dpr & 0xfu);
+          }
+          srsran::console("NB-IoT: Msg3 CCCH SDU (%u bytes): %s\n", n - skip, js.c_str());
+          logger.info("NB-IoT Msg3 TC-RNTI 0x%04x CCCH: %s", tc_rnti, js.c_str());
+          decoded = true;
+          std::string why;
+          if (!send_msg4(tc_rnti, pdu + pos + skip, n - skip, why)) {
+            srsran::console("NB-IoT: no Msg4 for TC-RNTI 0x%04x: %s\n", tc_rnti, why.c_str());
+          }
+          break;
+        }
+      }
+      if (not decoded) {
+        srsran::console("NB-IoT: Msg3 CCCH SDU does not decode as UL-CCCH-Message-NB\n");
+      }
+    } else if (s.lcid != 31) {
+      srsran::console("NB-IoT: Msg3 LCID %u, %u bytes: %s\n", s.lcid, n, hex(pdu + pos, n).c_str());
+    }
+    pos += n;
   }
 }
 

@@ -23,6 +23,7 @@
 #define SRSENB_NBIOT_MAC_H
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -56,6 +57,7 @@ struct nbiot_ra_config {
   uint32_t g_halves       = 0; ///< npdcch-StartSF-CSS-RA in halves (3: 1.5, 4: 2, 8: 4 ...)
   uint32_t offset_eighths = 0; ///< npdcch-Offset-RA: 0, 1, 2, 3 eighths
   uint32_t window_pp      = 0; ///< ra-ResponseWindowSize in search-space periods
+  uint32_t contention_pp  = 0; ///< mac-ContentionResolutionTimer in search-space periods
 
   // What the response contains
   uint32_t                  rar_i_rep = 2;                ///< repetitions of the RAR NPDSCH: Table 16.4.1.3-2 index
@@ -107,11 +109,18 @@ public:
   /// The same, without the result (what the receiver's callback uses); logs the outcome
   void preamble_detected(const nbiot_nprach_detection& d);
 
+  /// Called (from preamble_detected) for every response planned, so the Msg3 it grants can be received
+  using response_callback = std::function<void(const nbiot_ra_response&)>;
+  void set_response_callback(response_callback cb) { on_response = std::move(cb); }
+
+  /// A Msg3 transport block of the UE given tc_rnti arrived: MAC PDU with the CCCH SDU (TS 36.321 6.1.2, 6.2.1)
+  void msg3_received(uint16_t tc_rnti, const uint8_t* pdu, uint32_t len);
+
   /// Responses whose Msg3 has not been dealt with yet
   std::vector<nbiot_ra_response> pending() const;
 
   struct counters {
-    uint64_t preambles = 0, answered = 0, late = 0, no_room = 0, no_layout = 0;
+    uint64_t preambles = 0, answered = 0, late = 0, no_room = 0, no_layout = 0, msg4 = 0;
   };
   counters stats() const;
 
@@ -128,12 +137,34 @@ private:
   srsran_nbiot_dl_sched_t* sched     = nullptr;
   bool                     initiated = false;
 
+  response_callback              on_response;
   mutable std::mutex             lock;
   uint16_t                       next_tc_rnti = 0x0200;
   std::vector<nbiot_ra_response> answered;
   counters                       cnt;
 
   uint16_t alloc_tc_rnti();
+
+  /// Where a downlink transport block went
+  struct dl_alloc {
+    uint64_t npdcch_start = 0, npdcch_end = 0, npdsch_start = 0, npdsch_end = 0;
+  };
+
+  /**
+   * Plans DCI N1 (to rnti, in the Type-2 common search space) and the NPDSCH it points at, on the first candidate that
+   * starts in [t_min, t_max] with all its subframes free. pdu holds tbs bits. Caller holds the lock.
+   */
+  bool plan_css_dl(uint16_t                     rnti,
+                   const srsran_nbiot_dci_n1_t& dci,
+                   const uint8_t*               pdu,
+                   uint32_t                     tbs,
+                   uint64_t                     t_min,
+                   uint64_t                     t_max,
+                   dl_alloc&                    out,
+                   std::string&                 why);
+
+  /// Contention resolution and RRCConnectionSetup-NB for the UE whose Msg3 carried ccch (TS 36.321 5.1.5, 36.331 5.3.3)
+  bool send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_len, std::string& why);
 };
 
 } // namespace srsenb

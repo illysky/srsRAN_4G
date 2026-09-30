@@ -37,6 +37,7 @@
 namespace srsenb {
 
 class nbiot_prach_worker;
+class nbiot_msg3_worker;
 class nbiot_mac;
 
 class phy final : public enb_phy_base,
@@ -110,6 +111,7 @@ private:
   prach_worker_pool                prach;
   std::unique_ptr<nbiot_prach_worker> nbiot_prach;
   std::unique_ptr<nbiot_mac>          nbiot_ra; // answers what nbiot_prach detects
+  std::unique_ptr<nbiot_msg3_worker>  nbiot_msg3; // receives the Msg3 the responses grant
   txrx                             tx_rx;
 
   bool initialized = false;
