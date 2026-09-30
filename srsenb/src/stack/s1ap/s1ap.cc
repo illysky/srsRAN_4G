@@ -911,7 +911,14 @@ bool s1ap::handle_paging(const asn1::s1ap::paging_s& msg)
   WarnUnsupportFeature(msg.ext, "S1AP message extension");
 
   uint32_t ueid = msg->ue_id_idx_value.value.to_number();
-  rrc->add_paging_id(ueid, msg->ue_paging_id.value);
+  // TS 36.413 9.2.1.116: the cycle in hyperframes (hfhalf: 512 frames); the window is (index + 1) x 1.28 s
+  uint32_t edrx_rf = 0, ptw_wb_rf = 0;
+  if (msg->paging_e_drx_info_present) {
+    const auto& e = msg->paging_e_drx_info.value;
+    edrx_rf       = (uint32_t)(e.paging_e_drx_cycle.to_number() * 1024);
+    ptw_wb_rf     = 128 * (1 + (e.paging_time_win_present ? (uint32_t)e.paging_time_win.value : 0));
+  }
+  rrc->add_paging_id(ueid, msg->ue_paging_id.value, edrx_rf, ptw_wb_rf);
   // Without the NB-IoT index, IMSI mod 1024 still gives the right paging occasion when nB <= T (TS 36.304 7.1)
   uint32_t edrx_hf = 0, ptw_rf = 0;
   if (msg->nb_io_t_paging_e_drx_info_present) {

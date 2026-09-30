@@ -69,6 +69,9 @@ public:
   /// Get how many bytes are required to fit the pending PCCH message.
   size_t pending_pcch_bytes(tti_point tti_tx_dl);
 
+  /// Whether tti_tx_dl is a paging occasion of ueid (TS 36.304 7.1, the default paging cycle)
+  bool is_paging_occasion(uint32_t ueid, tti_point tti_tx_dl) const;
+
   /**
    * Invoke "callable" for PCCH indexed by tti_tx_dl in a mutexed context.
    * Callable signature is bool(const_byte_span pdu, const pcch_msg& msg, bool is_first_tx)
@@ -155,10 +158,19 @@ bool paging_manager::add_tmsi_paging(uint32_t ueid, uint8_t mmec, srsran::const_
   return add_paging_record(ueid, paging_elem);
 }
 
+constexpr static const int paging_sf_pattern[4][4] = {{9, 4, -1, 0}, {-1, 9, -1, 4}, {-1, -1, -1, 5}, {-1, -1, -1, 9}};
+
+inline bool paging_manager::is_paging_occasion(uint32_t ueid, tti_point tti_tx_dl) const
+{
+  ueid = ueid % 1024;
+  return (int)tti_tx_dl.sf_idx() == paging_sf_pattern[((ueid / N) % Ns) % 4][(Ns - 1) % 4] &&
+         tti_tx_dl.sfn() % T == (T / N) * (ueid % N);
+}
+
 /// \remark See TS 36.304, Section 7
 bool paging_manager::add_paging_record(uint32_t ueid, const asn1::rrc::paging_record_s& paging_record)
 {
-  constexpr static const int sf_pattern[4][4] = {{9, 4, -1, 0}, {-1, 9, -1, 4}, {-1, -1, -1, 5}, {-1, -1, -1, 9}};
+  const auto& sf_pattern = paging_sf_pattern;
 
   ueid         = ((uint32_t)ueid) % 1024;
   uint32_t i_s = (ueid / N) % Ns;

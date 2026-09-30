@@ -121,7 +121,10 @@ public:
                        asn1::s1ap::cause_c&                       cause) override;
   bool     release_erabs(uint32_t rnti) override;
   int      release_erab(uint16_t rnti, uint16_t erab_id) override;
-  void     add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override;
+  void     add_paging_id(uint32_t                           ueid,
+                         const asn1::s1ap::ue_paging_id_c& ue_paging_id,
+                         uint32_t                           edrx_rf,
+                         uint32_t                           ptw_rf) override;
   void     ho_preparation_complete(uint16_t                     rnti,
                                    rrc::ho_prep_result          result,
                                    const asn1::s1ap::ho_cmd_s&  msg,
@@ -191,6 +194,22 @@ private:
   std::unique_ptr<freq_res_common_list>    cell_res_list;
   std::map<uint16_t, unique_rnti_ptr<ue> > users; // NOTE: has to have fixed addr
   std::unique_ptr<paging_manager>          pending_paging;
+
+  // Pages of UEs in eDRX (TS 36.304 7.3), held until the UE's paging time window, then sent at each of its paging
+  // occasions in the window. The MME repeats the page one eDRX cycle later if the UE did not answer.
+  struct edrx_page {
+    uint32_t                     ueid;
+    asn1::s1ap::ue_paging_id_c   id;
+    uint32_t                     cycle_rf;
+    uint32_t                     ptw_rf;
+    uint32_t                     ue_id_h;        ///< the 10 msbs of the Hashed_ID (P-RNTI on the (M)PDCCH)
+    uint64_t                     window_end = 0; ///< absolute frame, once the page is in its window
+    uint64_t                     last_po    = 0; ///< absolute subframe of the last occasion used
+  };
+  std::mutex             edrx_mutex;
+  std::vector<edrx_page> edrx_pages;
+  void                   release_edrx_pages(uint32_t tti_tx_dl);
+  void                   add_paging_record(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id);
 
   void     process_release_complete(uint16_t rnti);
   void     rem_user(uint16_t rnti);

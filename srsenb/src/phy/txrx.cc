@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "srsenb/hdr/phy/txrx.h"
+#include "srsenb/hdr/phy/emtc_hsfn.h"
 #include "srsenb/hdr/phy/nbiot_mac.h"
 #include "srsenb/hdr/phy/nbiot_msg3_worker.h"
 #include "srsenb/hdr/phy/nbiot_prach_worker.h"
@@ -142,10 +143,13 @@ void txrx::run_thread()
   // Transmitted subframes so far; the first one is TTI 0 of hyper frame 0. NB-IoT signals the hyper-SFN, so the
   // workers need to know which hyper frame the subframe they build belongs to.
   uint64_t tx_count = 0;
+  // LTE-M: the TTI extended by the hyperframes since start, for the SIB1-BR hyperSFN and eDRX paging
+  uint64_t lte_abs_tti = emtc::abs_tti_latest().load() + tti;
 
   // Main loop
   while (running) {
     tti = TTI_ADD(tti, 1);
+    emtc::set_abs_tti(++lte_abs_tti);
     // Not wrapped at 1024: the NB-IoT scheduling table keys on the absolute subframe, which must never go backwards.
     const uint32_t hfn_tx = (uint32_t)(tx_count / (SRSRAN_NOF_SF_X_FRAME * 1024UL));
     tx_count++;

@@ -112,8 +112,8 @@ public:
                    srsran::const_span<uint8_t>                nas_pdu,
                    asn1::s1ap::cause_c&                       cause) override;
   int  release_erab(uint16_t rnti, uint16_t erab_id) override;
-  /// ueid: IMSI mod 4096
-  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override
+  /// ueid: IMSI mod 4096; the WB-S1 eDRX of Paging-eDRXInformation does not apply to NB-IoT
+  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id, uint32_t, uint32_t) override
   {
     add_paging_id_nbiot(ueid, ue_paging_id, 0, 0);
   }
@@ -255,9 +255,12 @@ public:
     return pick(rnti)->modify_erab(rnti, erab_id, qos_params, nas_pdu, cause);
   }
   int  release_erab(uint16_t rnti, uint16_t erab_id) override { return pick(rnti)->release_erab(rnti, erab_id); }
-  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override
+  void add_paging_id(uint32_t                           ueid,
+                     const asn1::s1ap::ue_paging_id_c& ue_paging_id,
+                     uint32_t                           edrx_rf,
+                     uint32_t                           ptw_rf) override
   {
-    lte->add_paging_id(ueid, ue_paging_id);
+    lte->add_paging_id(ueid, ue_paging_id, edrx_rf, ptw_rf);
   }
   void add_paging_id_nbiot(uint32_t                           nb_ueid,
                            const asn1::s1ap::ue_paging_id_c& ue_paging_id,

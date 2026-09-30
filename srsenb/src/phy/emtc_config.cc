@@ -322,12 +322,28 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
   }
   br.start_symbol_br_r13   = (uint8_t)cfg.start_symbol;
   br.si_hop_cfg_common_r13 = sib_type1_v1310_ies_s::bw_reduced_access_related_info_r13_s_::si_hop_cfg_common_r13_opts::off;
+  // eDRX (TS 36.304 7.3) needs the H-SFN, which changes every 10.24 s: the PHY writes it into the packed message
+  v1310.edrx_allowed_r13_present = true;
+  v1310.hyper_sfn_r13_present    = true;
 
   {
+    std::vector<uint8_t> ones;
+    size_t               ones_len = 0;
     bcch_dl_sch_msg_br_s msg;
+    v1310.hyper_sfn_r13.from_number(0);
     msg.msg.set_c1().set_sib_type1_br_r13() = s;
     if (!pack(msg, srsran_emtc_sib1_br_tbs(cfg.sched_info_sib1_br), out.sib1, out.sib1_len, "SIB1-BR", err)) {
       return false;
+    }
+    v1310.hyper_sfn_r13.from_number(0x3ff);
+    msg.msg.c1().sib_type1_br_r13() = s;
+    if (!pack(msg, srsran_emtc_sib1_br_tbs(cfg.sched_info_sib1_br), ones, ones_len, "SIB1-BR", err)) {
+      return false;
+    }
+    for (size_t i = 0; i < out.sib1.size() * 8 && out.sib1_hsfn_bit < 0; i++) {
+      if (((out.sib1[i / 8] ^ ones[i / 8]) >> (7 - i % 8)) & 1u) {
+        out.sib1_hsfn_bit = (int)i;
+      }
     }
   }
 

@@ -94,6 +94,7 @@ struct bcast {
   std::vector<uint8_t>              sib1;       ///< BCCH-DL-SCH-BR SIB1-BR, zero padded to its TBS
   std::vector<std::vector<uint8_t>> si;         ///< BCCH-DL-SCH-BR SystemInformation-BR, zero padded to each si-TBS
   size_t                            sib1_len = 0; ///< unpadded bytes
+  int                               sib1_hsfn_bit = -1; ///< first bit of hyperSFN-r13 in sib1, set per transmission
   std::vector<size_t>               si_len;
 };
 

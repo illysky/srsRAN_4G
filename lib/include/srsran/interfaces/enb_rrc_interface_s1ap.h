@@ -69,7 +69,10 @@ public:
    */
   virtual int release_erab(uint16_t rnti, uint16_t erab_id) = 0;
 
-  virtual void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) = 0;
+  /// edrx_rf is the eDRX cycle of Paging-eDRXInformation in radio frames (0 without eDRX), ptw_rf the paging time
+  /// window in radio frames
+  virtual void
+  add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id, uint32_t edrx_rf, uint32_t ptw_rf) = 0;
   /// NB-IoT paging: nb_ueid is the NB-IoT UE Identity Index Value, IMSI mod 4096 (TS 36.413 9.2.1.141); edrx_hf is
   /// the eDRX cycle in hyperframes (0 without eDRX), ptw_rf the paging time window in radio frames
   virtual void add_paging_id_nbiot(uint32_t                           nb_ueid,

@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/stack/rrc/rrc.h"
+#include "srsenb/hdr/phy/emtc_hsfn.h"
 #include "srsenb/hdr/stack/mac/sched_interface.h"
 #include "srsenb/hdr/stack/rrc/rrc_cell_cfg.h"
 #include "srsenb/hdr/stack/rrc/rrc_endc.h"
@@ -525,7 +526,70 @@ int rrc::modify_erab(uint16_t                                   rnti,
   than user map
 *******************************************************************************/
 
-void rrc::add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id)
+namespace {
+
+/// The paging time window of an eDRX page (TS 36.304 7.3) that contains frame f, or else the next one (absolute
+/// frames). PH: H-SFN mod T_eDRX,H = UE_ID_H mod T_eDRX,H; the window starts in SFN 256 * i_eDRX of the PH, with
+/// i_eDRX = floor(UE_ID_H / T_eDRX,H) mod 4, and may reach into the following hyperframes.
+void edrx_window(uint32_t cycle_rf, uint32_t ptw_rf, uint32_t ue_id_h, uint64_t f, uint64_t& start, uint64_t& end)
+{
+  const uint64_t th    = cycle_rf / 1024;
+  const uint64_t hsfn  = (f / 1024) % 1024;
+  const uint64_t delta = (hsfn % th + th - ue_id_h % th) % th;
+  for (uint64_t h = f / 1024 - delta - th;; h += th) {
+    start = h * 1024 + 256 * ((ue_id_h / th) % 4);
+    end   = start + ptw_rf - 1;
+    if (end >= f) {
+      return;
+    }
+  }
+}
+
+} // namespace
+
+void rrc::add_paging_id(uint32_t                           ueid,
+                        const asn1::s1ap::ue_paging_id_c& ue_paging_id,
+                        uint32_t                           edrx_rf,
+                        uint32_t                           ptw_rf)
+{
+  const bool s_tmsi = ue_paging_id.type().value == asn1::s1ap::ue_paging_id_c::types_opts::s_tmsi;
+  if (edrx_rf > 0 && (edrx_rf < 1024 || !s_tmsi)) {
+    srsran::console("LTE-M: eDRX paging with a cycle of %u frames%s is not supported: paging in every occasion\n",
+                    edrx_rf,
+                    s_tmsi ? "" : " by IMSI");
+  } else if (edrx_rf > 0) {
+    const uint32_t              m_tmsi = ue_paging_id.s_tmsi().m_tmsi.to_number();
+    std::lock_guard<std::mutex> lock(edrx_mutex);
+    for (const edrx_page& p : edrx_pages) {
+      if (p.id.s_tmsi().m_tmsi.to_number() == m_tmsi) {
+        return;
+      }
+    }
+    edrx_page p;
+    p.ueid     = ueid;
+    p.id       = ue_paging_id;
+    p.cycle_rf = edrx_rf;
+    p.ptw_rf   = ptw_rf;
+    p.ue_id_h  = emtc::hashed_id(m_tmsi) >> 22;
+    edrx_pages.push_back(p);
+    const uint64_t f     = emtc::abs_tti_latest().load() / 10;
+    uint64_t       start = 0, end = 0;
+    edrx_window(p.cycle_rf, p.ptw_rf, p.ue_id_h, f, start, end);
+    srsran::console("LTE-M: eDRX page for M-TMSI 0x%x (eDRX %u frames, window %u frames, UE_ID_H %u): held until the "
+                    "window at H-SFN %u SFN %u (in %.2f s)\n",
+                    m_tmsi,
+                    p.cycle_rf,
+                    p.ptw_rf,
+                    p.ue_id_h,
+                    (uint32_t)((start / 1024) % 1024),
+                    (uint32_t)(start % 1024),
+                    start > f ? (start - f) / 100.0 : 0.0);
+    return;
+  }
+  add_paging_record(ueid, ue_paging_id);
+}
+
+void rrc::add_paging_record(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id)
 {
   if (ue_paging_id.type().value == asn1::s1ap::ue_paging_id_c::types_opts::imsi) {
     pending_paging->add_imsi_paging(ueid, ue_paging_id.imsi());
@@ -534,8 +598,50 @@ void rrc::add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_pagi
   }
 }
 
+void rrc::release_edrx_pages(uint32_t tti_tx_dl)
+{
+  const uint32_t sf = tti_tx_dl % 10;
+  if (sf != 0 && sf != 4 && sf != 5 && sf != 9) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(edrx_mutex);
+  if (edrx_pages.empty()) {
+    return;
+  }
+  const uint64_t a = emtc::abs_tti(tti_tx_dl);
+  const uint64_t f = a / 10;
+  for (auto it = edrx_pages.begin(); it != edrx_pages.end();) {
+    const uint32_t m_tmsi = it->id.s_tmsi().m_tmsi.to_number();
+    if (it->window_end != 0 && f > it->window_end) {
+      srsran::console("LTE-M: eDRX paging window of M-TMSI 0x%x over\n", m_tmsi);
+      it = edrx_pages.erase(it);
+      continue;
+    }
+    uint64_t start = 0, end = 0;
+    edrx_window(it->cycle_rf, it->ptw_rf, it->ue_id_h, f, start, end);
+    if (start <= f) {
+      if (it->window_end == 0) {
+        it->window_end = end;
+        srsran::console("LTE-M: eDRX paging window of M-TMSI 0x%x: H-SFN %u SFN %u to %u\n",
+                        m_tmsi,
+                        (uint32_t)((start / 1024) % 1024),
+                        (uint32_t)(start % 1024),
+                        (uint32_t)(end % 1024));
+      }
+      if (it->last_po != a && pending_paging->is_paging_occasion(it->ueid, tti_point(tti_tx_dl))) {
+        it->last_po = a;
+        // clears what this paging frame carried one paging cycle ago before the record is added
+        pending_paging->pending_pcch_bytes(tti_point(tti_tx_dl));
+        add_paging_record(it->ueid, it->id);
+      }
+    }
+    ++it;
+  }
+}
+
 bool rrc::is_paging_opportunity(uint32_t tti, uint32_t* payload_len)
 {
+  release_edrx_pages(tti);
   *payload_len = pending_paging->pending_pcch_bytes(tti_point(tti));
   return *payload_len > 0;
 }

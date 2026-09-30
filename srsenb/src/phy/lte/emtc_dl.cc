@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/phy/lte/emtc_dl.h"
+#include "srsenb/hdr/phy/emtc_hsfn.h"
 
 extern "C" {
 #include "srsran/phy/phch/ra_dl.h"
@@ -138,13 +139,20 @@ void emtc_dl::put_sf(uint32_t tti, const mac_interface_phy_lte::dl_sched_t& gran
   if (!initiated || !bc) {
     return;
   }
-  const uint32_t sfn = (tti / 10) % 1024;
-  const uint32_t sf  = tti % 10;
+  const uint32_t sfn  = (tti / 10) % 1024;
+  const uint32_t sf   = tti % 10;
+  const uint32_t hsfn = emtc::hsfn(tti);
   uint32_t       nb = 0, rv = 0;
 
   // SIB1-BR: N_acc = 1, starts at symbol 3 above 10 PRB (TS 36.213 7.1.6.4A)
   if (srsran_emtc_sib1_br(&bc->sched, sfn, sf, &nb, &rv)) {
-    encode_bcast(tti, nb, cell.nof_prb > 10 ? 3 : 4, rv, 1, bc->sib1, sf_symbols);
+    sib1_buf = bc->sib1;
+    for (int i = 0; i < 10 && bc->sib1_hsfn_bit >= 0; i++) {
+      const uint32_t b = (uint32_t)bc->sib1_hsfn_bit + i;
+      const uint8_t  m = 0x80u >> (b % 8);
+      sib1_buf[b / 8]  = ((hsfn >> (9 - i)) & 1u) ? (sib1_buf[b / 8] | m) : (sib1_buf[b / 8] & ~m);
+    }
+    encode_bcast(tti, nb, cell.nof_prb > 10 ? 3 : 4, rv, 1, sib1_buf, sf_symbols);
   }
 
   // BR SI messages: N_acc = 4 (FDD)

@@ -167,7 +167,7 @@ public:
   bool has_erab(uint16_t rnti, uint32_t erab_id) const override { return true; }
   bool release_erabs(uint32_t rnti) override { return true; }
   int  release_erab(uint16_t rnti, uint16_t erab_id) override { return SRSRAN_SUCCESS; }
-  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override {}
+  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id, uint32_t, uint32_t) override {}
   void ho_preparation_complete(uint16_t                     rnti,
                                ho_prep_result               result,
                                const asn1::s1ap::ho_cmd_s&  msg,

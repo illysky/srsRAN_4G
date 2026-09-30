@@ -81,6 +81,7 @@ private:
   bool                               initiated = false;
   srslog::basic_logger*              logger    = nullptr;
   std::vector<uint8_t>               tb_buf;
+  std::vector<uint8_t>               sib1_buf;
 };
 
 } // namespace lte
