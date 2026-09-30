@@ -445,7 +445,8 @@ bool nbiot_mac::plan_dl(const search_space&          ss,
                         uint64_t                     t_max,
                         bool                         with_ack,
                         dl_alloc&                    out,
-                        std::string&                 why)
+                        std::string&                 why,
+                        uint16_t                     npdsch_rnti)
 {
   const uint64_t        now = srsran_nbiot_dl_sched_now(sched);
   srsran_nbiot_layout_t layout;
@@ -495,7 +496,8 @@ bool nbiot_mac::plan_dl(const search_space&          ss,
   }
   if (n_sf * srsran_nbiot_dlch_bits_per_sf(&dlch) > (uint32_t)SRSRAN_NBIOT_DL_SCHED_MAX_E ||
       srsran_nbiot_npdsch_encode(&dlch, pdu, tbs, n_sf, e) != SRSRAN_SUCCESS ||
-      srsran_nbiot_dl_sched_add_npdsch(sched, e, n_sf * srsran_nbiot_dlch_bits_per_sf(&dlch), rnti, n_sf, &pd, min_t) !=
+      srsran_nbiot_dl_sched_add_npdsch(
+          sched, e, n_sf * srsran_nbiot_dlch_bits_per_sf(&dlch), npdsch_rnti ? npdsch_rnti : rnti, n_sf, &pd, min_t) !=
           SRSRAN_SUCCESS) {
     cnt.no_room++;
     why = "the downlink schedule refused the NPDSCH";

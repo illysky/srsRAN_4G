@@ -61,8 +61,16 @@ static bool is_single_tone(const srsran_npusch_cfg_t* c)
   return c->n_sc == 1;
 }
 
+static bool is_format2(const srsran_npusch_cfg_t* c)
+{
+  return c->format == 2;
+}
+
 static uint32_t slots_per_ru(const srsran_npusch_cfg_t* c)
 {
+  if (is_format2(c)) {
+    return 4; // TS 36.211 Table 10.1.2.3-1
+  }
   if (c->spacing_hz == 3750) {
     return 16;
   }
@@ -80,7 +88,7 @@ static uint32_t slots_per_ru(const srsran_npusch_cfg_t* c)
 
 static uint32_t data_syms_ru(const srsran_npusch_cfg_t* c)
 {
-  return 6 * slots_per_ru(c) * c->n_sc;
+  return (is_format2(c) ? 4 : 6) * slots_per_ru(c) * c->n_sc;
 }
 
 static uint32_t qm_of(const srsran_npusch_cfg_t* c)
@@ -159,6 +167,18 @@ int srsran_npusch_check_cfg(const srsran_npusch_cfg_t* c)
   }
   if (c->n_sc != 1 && c->n_sc != 3 && c->n_sc != 6 && c->n_sc != 12) {
     return SRSRAN_ERROR_INVALID_INPUTS;
+  }
+  if (c->format > 2) {
+    return SRSRAN_ERROR_INVALID_INPUTS;
+  }
+  if (is_format2(c)) {
+    uint32_t n_carriers = c->spacing_hz == 3750 ? 48 : 12;
+    if (c->n_sc != 1 || c->n_ru != 1 || c->qm != 1 || (c->spacing_hz != 3750 && c->spacing_hz != 15000) ||
+        c->sc >= n_carriers || c->n_rep < 1 || c->n_rep > SRSRAN_NPUSCH_MAX_REP || (c->n_rep & (c->n_rep - 1)) != 0 ||
+        c->cell_id >= SRSRAN_NUM_PCI || c->slot >= slots_per_frame(c) || c->rnti > 0xffff) {
+      return SRSRAN_ERROR_INVALID_INPUTS;
+    }
+    return SRSRAN_SUCCESS;
   }
   if (c->spacing_hz != 3750 && c->spacing_hz != 15000) {
     return SRSRAN_ERROR_INVALID_INPUTS;
@@ -707,5 +727,149 @@ int srsran_npusch_decode(srsran_npusch_t*           q,
   if (res->crc_ok) {
     srsran_bit_unpack_vector(q->data, tb, (int)c->tbs);
   }
+  return SRSRAN_SUCCESS;
+}
+
+// ---------------------------------------------------------------- format 2
+
+/* Orthogonal sequences of length 3 (TS 36.211 Table 5.5.2.2.1-2), as multiples of 2 pi / 3 */
+static const uint8_t npusch_w3[3][3] = {{0, 0, 0}, {0, 1, 2}, {0, 2, 1}};
+
+int srsran_npusch_decode_ack(srsran_npusch_t* q, const srsran_npusch_cfg_t* c, const cf_t* samples, srsran_npusch_res_t* res)
+{
+  if (q == NULL || c == NULL || samples == NULL || res == NULL || !is_format2(c) ||
+      srsran_npusch_check_cfg(c) != SRSRAN_SUCCESS) {
+    return SRSRAN_ERROR_INVALID_INPUTS;
+  }
+  memset(res, 0, sizeof(*res));
+  res->snr_db = NAN;
+
+  const uint32_t n_slots   = srsran_npusch_nof_slots(c);
+  const uint32_t slot_len  = srsran_npusch_slot_len(c);
+  const uint32_t n_fft     = fft_size(c);
+  const uint32_t spf       = slots_per_frame(c);
+  const uint32_t first_abs = c->frame * spf + c->slot;
+  const uint32_t l_rs0     = c->spacing_hz == 3750 ? 0 : 2; // reference signal in symbols l_rs0 .. l_rs0 + 2
+
+  // ---- front end: FFT of every symbol and removal of the single tone phase rotation (pi/2 BPSK)
+  uint32_t sym_start[7];
+  uint32_t off = 0;
+  for (uint32_t l = 0; l < 7; l++) {
+    sym_start[l] = off;
+    off += cp_samples(c, l) + n_fft;
+  }
+  double   phi_hat  = 0.0;
+  uint32_t lt       = 0;
+  double   df       = (double)c->spacing_hz;
+  int      k_single = (int)c->sc - (c->spacing_hz == 3750 ? 24 : 6);
+  uint32_t n_ts     = c->spacing_hz == 3750 ? 8192 : 2048;
+  for (uint32_t s = 0; s < n_slots; s++) {
+    for (uint32_t l = 0; l < 7; l++) {
+      cf_t* t = q->y + (size_t)s * 7 + l;
+      demod_symbol(q, c, samples + (size_t)s * slot_len + sym_start[l], l, t);
+      uint32_t cp_ts = (c->spacing_hz == 3750) ? 256 : (l == 0 ? 160 : 144);
+      if (lt > 0) {
+        phi_hat += 2.0 * M_PI * df * ((double)k_single + 0.5) * (double)(n_ts + cp_ts) / NPUSCH_TS_HZ;
+        phi_hat = fmod(phi_hat, 2.0 * M_PI);
+      }
+      t[0] *= cexpf(-I * (float)(M_PI / 2.0 * (double)(lt % 2) + phi_hat));
+      lt++;
+    }
+  }
+
+  // ---- reference signal: r(3n + m) = w(m) r_u(n), the cover w chosen per slot by c(8 n_s + i), c_init = N_ID^cell
+  if (srsran_sequence_set_LTE_pr(&q->seq_dmrs, n_slots, 35) ||
+      srsran_sequence_set_LTE_pr(&q->seq_gh, 8 * spf + 8, c->cell_id)) {
+    return SRSRAN_ERROR;
+  }
+  const uint32_t u     = c->cell_id % 16;
+  double         resid = 0.0;
+  for (uint32_t s = 0; s < n_slots; s++) {
+    uint32_t ns  = (first_abs + s) % spf;
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < 8; i++) {
+      sum += (uint32_t)(q->seq_gh.c[8 * ns + i] & 1) << i;
+    }
+    const uint8_t* w  = npusch_w3[sum % 3];
+    cf_t           rb = dmrs_single(q, s, u);
+    cf_t           e[3];
+    cf_t           h = 0.0f;
+    for (uint32_t m = 0; m < 3; m++) {
+      cf_t r = rb * cexpf(I * 2.0f * (float)M_PI * (float)w[m] / 3.0f);
+      e[m]   = q->y[(size_t)s * 7 + l_rs0 + m] * conjf(r);
+      h += e[m];
+    }
+    h /= 3.0f;
+    q->h_raw[s] = h;
+    for (uint32_t m = 0; m < 3; m++) {
+      float d = cabsf(e[m] - h);
+      resid += (double)d * d;
+    }
+  }
+  // three estimates per slot leave 2/3 of the noise in the residual around their mean
+  float noise = (float)(resid / (2.0 * (double)n_slots));
+  if (c->noise_var > 0.0f) {
+    noise = c->noise_var;
+  }
+  if (noise < 1e-12f) {
+    noise = 1e-12f;
+  }
+  float psi = 0.0f;
+  if (estimate_psi(q->h_raw, n_slots, 1, &psi) != SRSRAN_SUCCESS) {
+    return SRSRAN_ERROR;
+  }
+  double slot_seconds = (double)slot_len / (double)SRSRAN_NPUSCH_SRATE_HZ;
+  res->cfo_hz         = psi / (float)(2.0 * M_PI * slot_seconds);
+
+  // coherent average of all slots, each rotated back by the frequency offset
+  cf_t hsum = 0.0f;
+  for (uint32_t s = 0; s < n_slots; s++) {
+    hsum += q->h_raw[s] * cexpf(-I * psi * (float)s);
+  }
+  float power = cabsf(hsum / (float)n_slots);
+  power *= power;
+  res->noise_var = noise;
+  // an average of 3 n_slots estimates keeps noise / (3 n_slots) of the noise
+  float excess = power - noise / (3.0f * (float)n_slots);
+  res->snr_db  = 10.0f * log10f((excess > 1e-12f ? excess : 1e-12f) / noise);
+
+  // ---- data: the symbols around the reference signal, bit 4 s + i of every repetition; ACK is 16 ones
+  float dt_slot[7];
+  for (uint32_t l = 0; l < 7; l++) {
+    float centre_l = (float)(sym_start[l] + cp_samples(c, l)) + (float)n_fft / 2.0f;
+    float centre_d = (float)(sym_start[l_rs0 + 1] + cp_samples(c, l_rs0 + 1)) + (float)n_fft / 2.0f;
+    dt_slot[l]     = (centre_l - centre_d) / (float)slot_len;
+  }
+  float    metric = 0.0f, h2 = 0.0f;
+  uint32_t n_ru_slots = slots_per_ru(c);
+  for (uint32_t rep = 0; rep < c->n_rep; rep++) {
+    uint32_t abs0  = first_abs + rep * n_ru_slots;
+    uint32_t nf    = (abs0 / spf) % 1024;
+    uint32_t ns    = abs0 % spf;
+    uint32_t cinit = (c->rnti << 14) + ((nf % 2) << 13) + ((ns / 2) << 9) + c->cell_id;
+    if (srsran_sequence_set_LTE_pr(&q->seq_scr, 16, cinit)) {
+      return SRSRAN_ERROR;
+    }
+    for (uint32_t qs = 0; qs < n_ru_slots; qs++) {
+      uint32_t s = rep * n_ru_slots + qs;
+      uint32_t i = 0;
+      for (uint32_t l = 0; l < 7; l++) {
+        if (l >= l_rs0 && l < l_rs0 + 3) {
+          continue;
+        }
+        cf_t h  = q->h_raw[s] * cexpf(I * psi * dt_slot[l]);
+        cf_t hy = conjf(h) * q->y[(size_t)s * 7 + l];
+        // the symbol is (1 - 2 (b xor c)) (1 + j) / sqrt(2): for b = 1 its sign is +1 where c = 1
+        float stat = crealf(hy * cexpf(-I * (float)(M_PI / 4.0)));
+        metric += q->seq_scr.c[4 * qs + i] ? stat : -stat;
+        h2 += crealf(h) * crealf(h) + cimagf(h) * cimagf(h);
+        i++;
+      }
+    }
+  }
+  // without a signal the statistic has a standard deviation of sqrt(noise / 2 * sum |h|^2)
+  res->ack_metric = h2 > 0.0f ? metric / sqrtf(0.5f * noise * h2) : 0.0f;
+  res->detected   = res->snr_db >= 0.0f;
+  res->ack        = res->detected && metric > 0.0f;
   return SRSRAN_SUCCESS;
 }

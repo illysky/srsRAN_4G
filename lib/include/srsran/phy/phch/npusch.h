@@ -78,6 +78,7 @@ typedef struct SRSRAN_API {
   uint32_t chest_window;    // slots averaged by the channel estimator (0: default of 32)
   float    noise_var;       // noise variance per tone (linear, unit power reference); <= 0: estimated from the DMRS
   uint32_t max_iterations;  // turbo decoder iterations (0: default of 10)
+  uint32_t format;          // 1: UL-SCH; 2: HARQ-ACK (single tone, one resource unit, BPSK, no tbs); 0 is taken as 1
 } srsran_npusch_cfg_t;
 
 typedef struct SRSRAN_API {
@@ -86,6 +87,9 @@ typedef struct SRSRAN_API {
   float    cfo_hz;       // frequency offset seen by the channel estimator
   float    noise_var;    // noise variance used
   uint32_t nof_iterations;
+  bool     detected;     // format 2: the reference signal is there (not DTX)
+  bool     ack;          // format 2: the HARQ-ACK bit, when detected
+  float    ack_metric;   // format 2: correlation with ACK, normalised to the noise (positive: ACK)
 } srsran_npusch_res_t;
 
 typedef struct SRSRAN_API {
@@ -135,5 +139,16 @@ SRSRAN_API int srsran_npusch_decode(srsran_npusch_t*           q,
                                     const cf_t*                samples,
                                     uint8_t*                   tb,
                                     srsran_npusch_res_t*       res);
+
+/**
+ * Demodulates one NPUSCH format 2 transmission (HARQ-ACK, TS 36.211 10.1.3 / 10.1.4, TS 36.212 6.3.3): the
+ * reference signal decides between a transmission and DTX, the 16 coded bits (all ones for ACK) between ACK and NACK.
+ * @param samples  srsran_npusch_nof_samples(cfg) samples
+ * @return SRSRAN_SUCCESS when the receiver ran (see res->detected and res->ack), an error code otherwise
+ */
+SRSRAN_API int srsran_npusch_decode_ack(srsran_npusch_t*           q,
+                                        const srsran_npusch_cfg_t* cfg,
+                                        const cf_t*                samples,
+                                        srsran_npusch_res_t*       res);
 
 #endif // SRSRAN_NPUSCH_H

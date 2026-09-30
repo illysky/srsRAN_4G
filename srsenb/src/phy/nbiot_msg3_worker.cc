@@ -160,6 +160,16 @@ void nbiot_msg3_worker::process(job* j)
 
   nbiot_npusch_result r;
   r.req = j->req;
+  if (j->req.cfg.format == 2) {
+    if (srsran_npusch_decode_ack(&npusch, &j->req.cfg, decimated.data(), &r.res) != SRSRAN_SUCCESS) {
+      logger.error("NB-IoT NPUSCH: HARQ-ACK receiver failed for RNTI 0x%x", j->req.rnti);
+      return;
+    }
+    if (callback) {
+      callback(r);
+    }
+    return;
+  }
   std::vector<uint8_t> bits(j->req.cfg.tbs);
   if (srsran_npusch_decode(&npusch, &j->req.cfg, decimated.data(), bits.data(), &r.res) != SRSRAN_SUCCESS) {
     logger.error("NB-IoT NPUSCH: receiver failed for RNTI 0x%x", j->req.rnti);

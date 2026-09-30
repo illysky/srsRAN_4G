@@ -212,6 +212,13 @@ private:
     uint32_t last_tbs  = 0;
     uint32_t bsr_bytes = 0;      ///< what the UE reported it still has
     bool     contention = false; ///< random access with its C-RNTI: the next grant goes in the Type-2 CSS
+    // Downlink HARQ process: the transport block until its HARQ-ACK says ACK
+    bool                 dl_inflight = false; ///< waiting for the HARQ-ACK decoder
+    uint64_t             dl_deadline = 0;
+    bool                 dl_retx     = false; ///< next downlink retransmits dl_pdu (NDI not toggled)
+    uint32_t             dl_retx_count = 0;
+    std::vector<uint8_t> dl_pdu;
+    uint32_t             dl_tbs = 0, dl_i_sf = 0, dl_i_tbs = 0;
   };
   std::map<uint16_t, ue_ctx> ues;
 
@@ -238,6 +245,10 @@ private:
                       srsran_nbiot_plan_t&                                                       pd);
 
   bool schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log);
+  /// DCI N1 and NPDSCH of ue.dl_pdu, and the receiver for its HARQ-ACK; caller holds the lock
+  bool send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std::vector<std::string>& log);
+  /// The HARQ-ACK decoder's verdict on the last downlink of ue (detected false: nothing came)
+  void dl_feedback(ue_ctx& ue, bool detected, bool ack, std::vector<std::string>& log);
   bool schedule_ul(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log);
 
   /// Uplink MAC PDU of a connected UE: control elements update ue, SDUs are returned
@@ -271,7 +282,8 @@ private:
                uint64_t                     t_max,
                bool                         with_ack,
                dl_alloc&                    out,
-               std::string&                 why);
+               std::string&                 why,
+               uint16_t                     npdsch_rnti = 0); ///< scrambling of the NPDSCH if not rnti (tests)
 
   /// Contention resolution and RRCConnectionSetup-NB for the UE whose Msg3 carried ccch (TS 36.321 5.1.5, 36.331 5.3.3)
   bool send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_len, std::string& why);

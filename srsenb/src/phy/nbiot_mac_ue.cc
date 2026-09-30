@@ -21,11 +21,12 @@
 
 // Scheduling of NB-IoT UEs in RRC_CONNECTED: one HARQ process each way, and one transaction at a time per UE (a
 // category NB1 UE is half duplex). Downlink: DCI N1 in the UE-specific search space, NPDSCH, HARQ-ACK on NPUSCH
-// format 2 (not decoded; RLC AM recovers losses). Uplink: DCI N0, NPUSCH format 1, decoded by the NPUSCH receiver.
+// format 2, decoded, with retransmission on NACK or DTX. Uplink: DCI N0, NPUSCH format 1, decoded by the NPUSCH receiver.
 
 #include "srsenb/hdr/phy/nbiot_mac.h"
 #include "srsran/common/standard_streams.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 extern "C" {
@@ -46,6 +47,8 @@ constexpr uint32_t UL_TURN_SF      = 100;   ///< longest a downlink burst may ke
                                             ///< its search space
 constexpr uint32_t UL_RESULT_SF    = 400;   ///< the decoder answers well within this after the NPUSCH
 constexpr uint32_t MAX_UL_FAILS    = 4;
+constexpr uint32_t MAX_DL_RETX     = 4;
+constexpr uint32_t ACK_RESULT_SF   = 100;   ///< HARQ-ACK decoder answer, after the format 2 transmission
 constexpr uint32_t MAX_DL_TBS      = 680;  ///< category NB1 (36.306 4.1C)
 constexpr uint32_t MAX_UL_TBS      = 1000;
 constexpr uint32_t UL_K0[4]        = {8, 16, 32, 64};       // Table 16.5.1-1
@@ -344,8 +347,11 @@ void nbiot_mac::release_ue(uint16_t rnti)
 bool nbiot_mac::schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log)
 {
   nbiot_rrc_interface_mac* r = rrc.load();
-  if (r == nullptr) {
+  if (r == nullptr || ue.dl_inflight) {
     return false;
+  }
+  if (ue.dl_retx) {
+    return send_dl(ue, t_min, " (retx " + std::to_string(ue.dl_retx_count) + ")", log);
   }
   static const uint32_t order[3] = {NBIOT_LCID_SRB1BIS, NBIOT_LCID_SRB1, NBIOT_LCID_DRB1};
   uint32_t              pending[3];
@@ -424,45 +430,133 @@ bool nbiot_mac::schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>
   if (!build_dl_pdu(sdus, tb, pdu)) {
     return false;
   }
-
-  srsran_nbiot_dci_n1_t dci = {};
-  dci.i_delay               = 0;
-  dci.i_sf                  = (uint32_t)i_sf;
-  dci.i_mcs                 = (uint32_t)i_tbs;
-  dci.i_rep                 = 0;
+  ue.dl_pdu.assign(pdu, pdu + tb);
+  ue.dl_tbs        = tbs;
+  ue.dl_i_sf       = (uint32_t)i_sf;
+  ue.dl_i_tbs      = (uint32_t)i_tbs;
+  ue.dl_retx_count = 0;
   ue.dl_ndi ^= 1u;
-  dci.ndi          = ue.dl_ndi;
-  dci.harq_ack_res = 0;
-  dci.dci_rep      = 0;
-  dl_alloc    a;
-  std::string why;
-  if (!plan_dl(uss(), ue.rnti, dci, pdu, tbs, t_min, t_min + 64, true, a, why)) {
-    char line[160];
-    snprintf(line, sizeof(line), "NB-IoT: downlink to 0x%04x lost after taking it from RLC: %s", ue.rnti, why.c_str());
-    log.emplace_back(line);
-    return false;
-  }
-  ue.busy_until = a.npdsch_end + HARQ_ACK_K0 + HARQ_ACK_SF + UE_GAP_SF;
 
   std::string what;
   for (const auto& s : sdus) {
     what += " LCID " + std::to_string(s.first) + ":" + std::to_string(s.second.size());
   }
-  char line[256];
+  if (!send_dl(ue, t_min, what, log)) {
+    // Taken from RLC already: the HARQ process keeps it for the next turn
+    ue.dl_retx = true;
+  }
+  return true;
+}
+
+bool nbiot_mac::send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std::vector<std::string>& log)
+{
+  srsran_nbiot_dci_n1_t dci = {};
+  dci.i_delay               = 0;
+  dci.i_sf                  = ue.dl_i_sf;
+  dci.i_mcs                 = ue.dl_i_tbs;
+  dci.i_rep                 = 0;
+  dci.ndi                   = ue.dl_ndi;
+  dci.harq_ack_res          = 0;
+  dci.dci_rep               = 0;
+  dl_alloc    a;
+  std::string why;
+  char        line[256];
+
+  // NBIOT_HARQ_TEST=nack|dtx spoils the first transmission of every fourth transport block: the NPDSCH scrambled for
+  // another RNTI (the UE answers NACK) or the DCI to another RNTI (the UE does not answer)
+  static const char* test    = getenv("NBIOT_HARQ_TEST");
+  static uint32_t    n_test  = 0;
+  const bool         spoil   = test != nullptr && ue.dl_retx_count == 0 && ue.dl_tbs >= 64 && ++n_test % 4 == 0;
+  const bool         to_dtx  = spoil && strcmp(test, "dtx") == 0;
+  const uint16_t     other   = (uint16_t)(ue.rnti ^ 0x0F0F);
+  if (!plan_dl(uss(),
+               to_dtx ? other : ue.rnti,
+               dci,
+               ue.dl_pdu.data(),
+               ue.dl_tbs,
+               t_min,
+               t_min + 64,
+               true,
+               a,
+               why,
+               spoil && !to_dtx ? other : 0)) {
+    snprintf(line, sizeof(line), "NB-IoT: downlink to 0x%04x not scheduled: %s", ue.rnti, why.c_str());
+    log.emplace_back(line);
+    return false;
+  }
+  ue.busy_until = a.npdsch_end + HARQ_ACK_K0 + HARQ_ACK_SF + UE_GAP_SF;
+  ue.dl_retx    = false;
+
+  // HARQ-ACK: NPUSCH format 2 on the resource of harq_ack_res 0, from the end of subframe n + k0 - 1 (36.213 16.4.2)
+  const uint64_t      start = a.npdsch_end + HARQ_ACK_K0;
+  nbiot_npusch_expect e;
+  e.start_sf       = start;
+  e.cfg.format     = 2;
+  e.cfg.n_sc       = 1;
+  e.cfg.spacing_hz = 15000;
+  e.cfg.sc         = 0;
+  e.cfg.n_ru       = 1;
+  e.cfg.n_rep      = 1;
+  e.cfg.qm         = 1;
+  e.cfg.rnti       = ue.rnti;
+  e.cfg.cell_id    = cfg.cell_id;
+  e.cfg.frame      = (uint32_t)((start / 10) % 1024);
+  e.cfg.slot       = (uint32_t)(2 * (start % 10));
+  e.rnti           = ue.rnti;
+  e.connected      = true;
+  if (request_npusch && request_npusch(e, why)) {
+    ue.dl_inflight = true;
+    ue.dl_deadline = start + HARQ_ACK_SF + ACK_RESULT_SF;
+  } else {
+    snprintf(line, sizeof(line), "NB-IoT: no HARQ-ACK receiver for 0x%04x: %s", ue.rnti, why.c_str());
+    log.emplace_back(line);
+  }
+
   snprintf(line,
            sizeof(line),
-           "NB-IoT: DL 0x%04x TBS %u (I_TBS %d, %u SF) NPDCCH %llu NPDSCH %llu..%llu NDI %u:%s",
+           "NB-IoT: DL 0x%04x TBS %u (I_TBS %u, %u SF) NPDCCH %llu NPDSCH %llu..%llu NDI %u, HARQ-ACK at %llu:%s",
            ue.rnti,
-           tbs,
-           i_tbs,
-           n_sf,
+           ue.dl_tbs,
+           ue.dl_i_tbs,
+           srsran_nbiot_npdsch_n_sf(ue.dl_i_sf),
            (unsigned long long)a.npdcch_start,
            (unsigned long long)a.npdsch_start,
            (unsigned long long)a.npdsch_end,
            dci.ndi,
+           (unsigned long long)start,
            what.c_str());
   log.emplace_back(line);
+  if (spoil) {
+    log.emplace_back(to_dtx ? "NB-IoT: HARQ test: that DCI went to another RNTI"
+                            : "NB-IoT: HARQ test: that NPDSCH was scrambled for another RNTI");
+  }
   return true;
+}
+
+void nbiot_mac::dl_feedback(ue_ctx& ue, bool detected, bool ack, std::vector<std::string>& log)
+{
+  ue.dl_inflight = false;
+  if (detected && ack) {
+    ue.dl_retx       = false;
+    ue.dl_retx_count = 0;
+    ue.dl_pdu.clear();
+    return;
+  }
+  if (ue.dl_retx_count >= MAX_DL_RETX) {
+    char line[160];
+    snprintf(line,
+             sizeof(line),
+             "NB-IoT: downlink to 0x%04x given up after %u retransmissions (RLC recovers it)",
+             ue.rnti,
+             MAX_DL_RETX);
+    log.emplace_back(line);
+    ue.dl_retx       = false;
+    ue.dl_retx_count = 0;
+    ue.dl_pdu.clear();
+    return;
+  }
+  ue.dl_retx_count++;
+  ue.dl_retx = true;
 }
 
 bool nbiot_mac::schedule_ul(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log)
@@ -631,6 +725,13 @@ void nbiot_mac::tick()
     schedule_paging(now, log);
     for (auto& kv : ues) {
       ue_ctx& ue = kv.second;
+      if (ue.dl_inflight) {
+        if (now <= ue.dl_deadline) {
+          continue;
+        }
+        log.push_back("NB-IoT: no decoder result for a HARQ-ACK");
+        dl_feedback(ue, false, false, log);
+      }
       if (ue.ul_inflight) {
         if (now <= ue.ul_deadline) {
           continue;
@@ -680,7 +781,38 @@ void nbiot_mac::tick()
 
 void nbiot_mac::npusch_received(const nbiot_npusch_result& res)
 {
-  const uint16_t      rnti = res.req.rnti;
+  const uint16_t rnti = res.req.rnti;
+  if (res.req.cfg.format == 2) {
+    std::vector<std::string> log;
+    bool                     known = false, retx = false;
+    uint32_t                 count = 0;
+    {
+      std::lock_guard<std::mutex> guard(lock);
+      auto                        it = ues.find(rnti);
+      if (it != ues.end() && it->second.dl_inflight) {
+        known = true;
+        dl_feedback(it->second, res.res.detected, res.res.ack, log);
+        retx  = it->second.dl_retx;
+        count = it->second.dl_retx_count;
+        if (res.res.detected) {
+          it->second.last_rx = srsran_nbiot_dl_sched_now(sched);
+        }
+      }
+    }
+    if (known) {
+      srsran::console("NB-IoT: HARQ-ACK 0x%04x: %s (SNR %.1f dB, metric %+.1f, CFO %+.0f Hz)%s\n",
+                      rnti,
+                      !res.res.detected ? "DTX" : res.res.ack ? "ACK" : "NACK",
+                      res.res.snr_db,
+                      res.res.ack_metric,
+                      res.res.cfo_hz,
+                      retx ? (", retransmission " + std::to_string(count)).c_str() : "");
+    }
+    for (const std::string& l : log) {
+      srsran::console("%s\n", l.c_str());
+    }
+    return;
+  }
   std::vector<ul_sdu> sdus;
   std::string         why;
   uint16_t            crnti = 0;
