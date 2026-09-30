@@ -72,7 +72,7 @@ struct config {
   // PUCCH, paging, maximum repetitions
   uint32_t n1_pucch_an       = 30; ///< n1PUCCH-AN of CE level 0 (HARQ-ACK of Msg4)
   uint32_t pucch_rep_msg4    = 1;
-  uint32_t paging_nb         = 3;
+  uint32_t paging_nbs        = 1; ///< paging-narrowBands-r13: narrowbands 0 .. paging_nbs - 1
   uint32_t mpdcch_rep_paging = 1;
   uint32_t pdsch_max_rep     = 16; ///< pdsch-maxNumRepetitionCEmodeA
   uint32_t pusch_max_rep     = 8;  ///< pusch-maxNumRepetitionCEmodeA

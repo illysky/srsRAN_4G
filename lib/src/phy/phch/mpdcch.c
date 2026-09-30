@@ -149,7 +149,8 @@ int srsran_mpdcch_dci_encode(srsran_mpdcch_t* q, const uint8_t* dci, uint32_t no
 static void dmrs_seq(const srsran_mpdcch_t* q, const srsran_mpdcch_cfg_t* cfg, float* r, uint32_t len)
 {
   uint32_t n_id  = cfg->common ? q->cell.id : cfg->n_id;
-  uint32_t c_init = (((cfg->sf_idx % 10) + 1) * (2 * n_id + 1) << 16) + 2; // n_SCID^MPDCCH = 2
+  uint32_t sf     = cfg->scrambling_sf_set ? cfg->scrambling_sf : cfg->sf_idx;
+  uint32_t c_init = (((sf % 10) + 1) * (2 * n_id + 1) << 16) + 2; // n_SCID^MPDCCH = 2
   srsran_sequence_state_t s;
   srsran_sequence_state_init(&s, c_init);
   srsran_sequence_state_gen_f(&s, (float)M_SQRT1_2, r, len);
@@ -181,7 +182,8 @@ int srsran_mpdcch_encode(srsran_mpdcch_t*           q,
   }
 
   uint32_t n_id = cfg->common ? q->cell.id : cfg->n_id;
-  srsran_sequence_apply_bit(q->e, q->e, E, ((cfg->sf_idx % 10) << 9) + n_id);
+  uint32_t sf_scr = cfg->scrambling_sf_set ? cfg->scrambling_sf : cfg->sf_idx;
+  srsran_sequence_apply_bit(q->e, q->e, E, ((sf_scr % 10) << 9) + n_id);
   srsran_mod_modulate(&q->qpsk, q->e, q->d, E);
 
   const uint32_t nof_sc = q->cell.nof_prb * SRSRAN_NRE;

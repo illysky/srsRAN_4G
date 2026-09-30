@@ -145,7 +145,7 @@ bool load(const std::string& path, config& o, std::string& err)
             get(c, "emtc.prach.mpdcch_repetitions", o.mpdcch_rep_ra, err) &&
             get(c, "emtc.prach.mpdcch_start_sf", o.mpdcch_start_sf_ra, err) &&
             get(c, "emtc.pucch.n1_an", o.n1_pucch_an, err) && get(c, "emtc.pucch.repetitions_msg4", o.pucch_rep_msg4, err) &&
-            get(c, "emtc.paging.narrowband", o.paging_nb, err) &&
+            get(c, "emtc.paging.narrowbands", o.paging_nbs, err) &&
             get(c, "emtc.paging.mpdcch_repetitions", o.mpdcch_rep_paging, err) &&
             get(c, "emtc.pdsch_max_repetitions", o.pdsch_max_rep, err) &&
             get(c, "emtc.pusch_max_repetitions", o.pusch_max_rep, err) &&
@@ -237,7 +237,12 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
       return false;
     }
   }
-  if (!nb_ok(cfg.paging_nb, "emtc.paging.narrowband")) {
+  if (cfg.paging_nbs == 0) {
+    err = "emtc.paging.narrowbands must be at least 1";
+    return false;
+  }
+  if (cfg.paging_nbs > n_nb) {
+    err = "emtc.paging.narrowbands: at most " + std::to_string(n_nb);
     return false;
   }
 
@@ -354,7 +359,7 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
   rr.ext                  = true;
 
   rr.pcch_cfg_v1310.set_present();
-  rr.pcch_cfg_v1310->paging_narrow_bands_r13 = (uint8_t)(cfg.paging_nb + 1);
+  rr.pcch_cfg_v1310->paging_narrow_bands_r13 = (uint8_t)cfg.paging_nbs;
   if (!set_enum(rr.pcch_cfg_v1310->mpdcch_num_repeat_paging_r13, cfg.mpdcch_rep_paging, "emtc.paging.mpdcch_repetitions", err)) {
     return false;
   }

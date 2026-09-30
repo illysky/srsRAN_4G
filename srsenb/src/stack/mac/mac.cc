@@ -247,6 +247,14 @@ int mac::cell_cfg(const std::vector<sched_interface::cell_cfg_t>& cell_cfg_)
     emtc_sched.set_cell(cell_config[0].emtc_cfg, cell_config[0].emtc_bcast, cell_config[0]);
     cell_config[0].emtc_dl_prbs = [this](uint32_t tti) { return emtc_sched.dl_prbs(tti); };
     cell_config[0].emtc_ul_prbs = [this](uint32_t tti) { return emtc_sched.ul_prbs(tti); };
+    emtc_sched.set_pcch_source([this](uint32_t tti, uint8_t* buf, uint32_t max) -> uint32_t {
+      uint32_t len = 0;
+      if (not rrc_h->is_paging_opportunity(tti, &len) or len == 0 or len > max) {
+        return 0;
+      }
+      rrc_h->read_pdu_pcch(tti, buf, len);
+      return len;
+    });
   }
   return scheduler.cell_cfg(cell_config);
 }

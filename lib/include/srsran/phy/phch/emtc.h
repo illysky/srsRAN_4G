@@ -135,6 +135,16 @@ SRSRAN_API uint32_t srsran_emtc_dci_6_1a_pack(uint32_t nof_prb, bool srs_6_1a, c
 /// Packs DCI 6-0A (unpacked bits, MSB first) padded to srsran_emtc_dci_size(); returns the size
 SRSRAN_API uint32_t srsran_emtc_dci_6_0a_pack(uint32_t nof_prb, bool srs_6_1a, const srsran_emtc_dci_t* dci, uint8_t* bits);
 
+/// Narrowband of the MPDCCH with P-RNTI for paging narrowband pnb: s_m, m = (pnb + N_ID^cell) mod N_NB^S, over the
+/// SIB1-BR narrowband set (TS 36.211 6.8B.5, 6.4.1; no SI hopping)
+SRSRAN_API uint32_t srsran_emtc_paging_mpdcch_nb(uint32_t nof_prb, uint32_t pci, uint32_t pnb);
+
+/// Packs DCI 6-2 for paging (flag = 1, TS 36.212 5.3.3.1.14); mcs is the I_TBS of Table 7.1.7.2.3-1. Returns the size
+SRSRAN_API uint32_t srsran_emtc_dci_6_2_pack(uint32_t nof_prb, uint32_t nb, uint32_t mcs, uint32_t rep, uint32_t dci_rep, uint8_t* bits);
+
+/// TBS (bits) of DCI format 1C / 6-2 (TS 36.213 Table 7.1.7.2.3-1), 0 if i_tbs is out of range
+SRSRAN_API uint32_t srsran_emtc_tbs_1c(uint32_t i_tbs);
+
 /// 20-bit CE mode A random access response grant (TS 36.213 6.2, Table 6-2). riv4 is the 4-bit UL type 0 allocation
 /// within the Msg3 narrowband (a leading 0 is implied); rep is the 2-bit Msg3 repetition code (00 = pusch-max/8),
 /// mcs the 3-bit truncated MCS, tpc the 3-bit TPC (3 = 0 dB), mpdcch_nb the 2-bit Msg3/4 MPDCCH narrowband offset.

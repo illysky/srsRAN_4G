@@ -28,6 +28,7 @@
 #include "srsran/srslog/srslog.h"
 #include <array>
 #include <bitset>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -60,6 +61,10 @@ public:
                 std::shared_ptr<const emtc::bcast>  bcast,
                 const cell_cfg_t&                   cell_cfg);
   bool enabled() const { return cfg != nullptr; }
+
+  /// Reads the PCCH of a paging occasion into buf (at most max bytes); returns its size, 0 if nothing is paged
+  using pcch_source = std::function<uint32_t(uint32_t tti_tx_dl, uint8_t* buf, uint32_t max)>;
+  void set_pcch_source(pcch_source src);
   bool is_br_preamble(uint32_t preamble) const;
 
   /// Takes over rnti before the MAC configures it (on a BR preamble)
@@ -190,6 +195,7 @@ private:
   void     plan_dl(uint32_t tti_tx_dl);
   bool     plan_ue_dl(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl);
   bool     plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl);
+  void     plan_paging(uint32_t po);
   uint32_t pucch_prb(uint32_t n_pucch, uint32_t tti) const;
   void     gc(uint32_t tti_tx_dl);
   uint16_t ra_rnti(uint32_t prach_tti) const;
@@ -208,6 +214,7 @@ private:
   std::map<uint32_t, dl_plan>               dl;
   std::map<uint32_t, std::vector<ul_grant>> ul;
   std::map<uint32_t, uint64_t>              ul_resv;
+  pcch_source                               pcch_src;
   std::map<uint16_t, ue_ctxt>               ues;
 
   // RAR MAC PDUs (built at planning time, sent two TTIs later)

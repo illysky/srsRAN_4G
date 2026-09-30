@@ -64,6 +64,78 @@ void sched_emtc::set_cell(std::shared_ptr<const emtc::config> cfg_,
   }
 }
 
+void sched_emtc::set_pcch_source(pcch_source src)
+{
+  std::lock_guard<std::mutex> lock(mutex);
+  pcch_src = std::move(src);
+}
+
+void sched_emtc::plan_paging(uint32_t po)
+{
+  if (!pcch_src) {
+    return;
+  }
+  // PNB = floor(UE_ID / (N * Ns)) mod Nn (TS 36.304 7.1): the PCCH of a PO goes on every paging narrowband. The
+  // MPDCCH of paging narrowband n is on s_((n + PCI) mod N_S) of the SIB1-BR set, its PDSCH where the DCI points: there
+  uint8_t*                buf = rar_buf[rar_buf_idx].data();
+  srsran_softbuffer_tx_t* sb  = &rar_sb[rar_buf_idx];
+  memset(buf, 0, rar_buf[0].size());
+  const uint32_t len = pcch_src(po, buf, 26); // the largest 6-2 TBS: 208 bits
+  if (len == 0) {
+    return;
+  }
+  const uint32_t pd  = tti_add(po, 2);
+  uint32_t       nbs = 0;
+  for (uint32_t pnb = 0; pnb < cfg->paging_nbs; pnb++) {
+    const uint32_t nb = srsran_emtc_paging_mpdcch_nb(cell.nof_prb, cell.id, pnb);
+    if (nb_free_dl(po, nb) && nb_free_dl(pd, nb)) {
+      nbs |= 1U << nb;
+    } else {
+      srsran::console("LTE-M: paging narrowband %d busy at PO %d\n", nb, po);
+    }
+  }
+  if (nbs == 0) {
+    return;
+  }
+  rar_buf_idx = (rar_buf_idx + 1) % NOF_RAR_BUF;
+  uint32_t i_tbs = 0;
+  while (srsran_emtc_tbs_1c(i_tbs) < len * 8) {
+    i_tbs++;
+  }
+  for (uint32_t nb = 0; nb < 32; nb++) {
+    if ((nbs & (1U << nb)) == 0) {
+      continue;
+    }
+    mac_interface_phy_lte::emtc_mpdcch_t mp = {};
+    mp.rnti                                 = SRSRAN_PRNTI;
+    mp.nb                                   = nb;
+    mp.common                               = true;
+    mp.nof_bits = srsran_emtc_dci_6_2_pack(cell.nof_prb, nb, i_tbs, 0, 0, mp.dci);
+    dl[po].mpdcch.push_back(mp);
+    dl[po].nbs |= 1U << nb;
+
+    pdsch_plan pp     = {};
+    pp.rar            = true;
+    pp.phy.rnti       = SRSRAN_PRNTI;
+    pp.phy.nb         = nb;
+    pp.phy.rb_start   = 0;
+    pp.phy.nof_rb     = 6;
+    pp.phy.tbs        = srsran_emtc_tbs_1c(i_tbs);
+    pp.phy.mod        = SRSRAN_MOD_QPSK;
+    pp.phy.rv         = 0;
+    pp.phy.data       = buf;
+    pp.phy.softbuffer = sb;
+    dl[pd].pdsch.push_back(pp);
+    dl[pd].nbs |= 1U << nb;
+    srsran::console("LTE-M: paging %d B (TBS %d) at PO %d on narrowband %d, PDSCH %d\n",
+                    len,
+                    srsran_emtc_tbs_1c(i_tbs),
+                    po,
+                    nb,
+                    pd);
+  }
+}
+
 bool sched_emtc::is_br_preamble(uint32_t preamble) const
 {
   return cfg && preamble >= cfg->first_preamble && preamble <= cfg->last_preamble;
@@ -582,6 +654,7 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
 
 void sched_emtc::plan_dl(uint32_t tti_tx_dl)
 {
+  plan_paging(tti_add(tti_tx_dl, 2));
   const uint32_t stale = tti_add(tti_tx_dl, -8);
   for (auto& it : ues) {
     it.second.rx_busy.reset(stale);

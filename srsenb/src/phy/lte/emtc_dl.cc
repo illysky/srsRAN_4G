@@ -166,6 +166,10 @@ void emtc_dl::put_sf(uint32_t tti, const mac_interface_phy_lte::dl_sched_t& gran
     mc.sf_idx              = sf;
     mc.common              = m.common;
     mc.n_id                = m.n_id;
+    if (m.rnti == SRSRAN_PRNTI) {
+      mc.scrambling_sf_set = true; // N_acc = 4 (FDD) for P-RNTI in every CE mode
+      mc.scrambling_sf     = srsran_emtc_scrambling_sf(tti, 4);
+    }
     if (srsran_mpdcch_encode(&mpdcch, &mc, m.dci, m.nof_bits, m.rnti, sf_symbols[0]) != SRSRAN_SUCCESS) {
       logger->error("LTE-M: MPDCCH encoding failed in TTI %d (rnti 0x%x)", tti, m.rnti);
     }
@@ -187,7 +191,7 @@ void emtc_dl::put_sf(uint32_t tti, const mac_interface_phy_lte::dl_sched_t& gran
     a.mod        = p.mod;
     a.tbs        = p.tbs;
     a.rv         = p.rv;
-    a.n_acc      = 1;
+    a.n_acc      = p.rnti == SRSRAN_PRNTI ? 4 : 1;
     a.data       = p.data;
     a.softbuffer = p.softbuffer;
     bool ok = encode(tti, a, sf_symbols);

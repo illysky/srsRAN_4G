@@ -840,6 +840,7 @@ int rf_soapy_recv_with_time_multi(void*    h,
   const long          timeoutUs = 400000; // arbitrarily chosen
 
   int       trials = 0;
+  int       timeouts = 0;
   int       ret    = 0;
   long long timeNs; // timestamp for receive buffer
   int       n = 0;
@@ -862,11 +863,18 @@ int rf_soapy_recv_with_time_multi(void*    h,
 
     ret = SoapySDRDevice_readStream(
         handler->device, handler->rxStream, buffs_ptr, rx_samples, &flags, &timeNs, timeoutUs);
-    if (ret == SOAPY_SDR_OVERFLOW || (ret > 0 && (flags & SOAPY_SDR_END_ABRUPT) != 0)) {
-      log_overflow(handler);
-      continue;
-    } else if (ret == SOAPY_SDR_TIMEOUT) {
-      log_late(handler, true);
+    if (ret == SOAPY_SDR_OVERFLOW || ret == SOAPY_SDR_TIMEOUT || (ret > 0 && (flags & SOAPY_SDR_END_ABRUPT) != 0)) {
+      if (ret == SOAPY_SDR_TIMEOUT) {
+        log_late(handler, true);
+      } else {
+        log_overflow(handler);
+      }
+      // A stalled stream (LimeSDR Mini: the FT601 FIFO can wedge) never recovers by itself: restart it
+      if (++timeouts % 20 == 0) {
+        fprintf(stderr, "RF: %d RX reads without samples (last %d), restarting the RX stream\n", timeouts, ret);
+        SoapySDRDevice_deactivateStream(handler->device, handler->rxStream, 0, 0);
+        SoapySDRDevice_activateStream(handler->device, handler->rxStream, 0, 0, 0);
+      }
       continue;
     } else if (ret < 0) {
       // unspecific error

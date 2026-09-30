@@ -54,7 +54,9 @@ typedef struct SRSRAN_API {
 typedef struct SRSRAN_API {
   uint32_t first_prb;    ///< lowest PRB of the narrowband
   uint32_t start_symbol; ///< l_MPDCCHStart (startSymbolBR)
-  uint32_t sf_idx;       ///< subframe number (scrambling and DM-RS, N_acc = 1)
+  uint32_t sf_idx;       ///< subframe number (RE mapping; scrambling and DM-RS too unless scrambling_sf_set)
+  bool     scrambling_sf_set;
+  uint32_t scrambling_sf; ///< (j0 N_acc) mod 10 of TS 36.211 6.8B.2 / 6.10.3A.1 when N_acc > 1 (P-RNTI, SC-RNTI)
   bool     common;       ///< Type1/Type2 common search space: scrambled with the PCI instead of n_ID
   uint32_t n_id;         ///< n_ID^MPDCCH (UE-specific search space)
 } srsran_mpdcch_cfg_t;

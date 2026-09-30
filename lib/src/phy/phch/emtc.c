@@ -315,6 +315,38 @@ uint32_t srsran_emtc_dci_6_0a_pack(uint32_t nof_prb, bool srs_6_1a, const srsran
   return size;
 }
 
+uint32_t srsran_emtc_paging_mpdcch_nb(uint32_t nof_prb, uint32_t pci, uint32_t pnb)
+{
+  uint32_t       s[16];
+  uint32_t       n_s  = 0;
+  const uint32_t n_nb = srsran_emtc_nof_nb(nof_prb);
+  for (uint32_t n = 0; n < n_nb && n_s < 16; n++) {
+    if (nof_prb <= 15 || !srsran_emtc_nb_in_centre(nof_prb, n)) {
+      s[n_s++] = n;
+    }
+  }
+  return n_s ? s[(pnb + pci) % n_s] : 0;
+}
+
+uint32_t srsran_emtc_dci_6_2_pack(uint32_t nof_prb, uint32_t nb, uint32_t mcs, uint32_t rep, uint32_t dci_rep, uint8_t* bits)
+{
+  uint8_t* p = bits;
+  put_bits(&p, 1, 1);
+  put_bits(&p, nb, srsran_emtc_nb_bits(nof_prb));
+  put_bits(&p, mcs, 3);
+  put_bits(&p, rep, 3);
+  put_bits(&p, dci_rep, 2);
+  return (uint32_t)(p - bits);
+}
+
+uint32_t srsran_emtc_tbs_1c(uint32_t i_tbs)
+{
+  static const uint32_t tbs[32] = {40,  56,  72,  120, 136, 144, 176,  208,  224,  256,  280,
+                                   296, 328, 336, 392, 488, 552, 600,  632,  696,  776,  840,
+                                   904, 1000, 1064, 1128, 1224, 1288, 1384, 1480, 1608, 1736};
+  return i_tbs < 32 ? tbs[i_tbs] : 0;
+}
+
 uint32_t srsran_emtc_rar_grant_ce_a(uint32_t nof_prb_ul,
                                     uint32_t msg3_nb,
                                     uint32_t riv4,
