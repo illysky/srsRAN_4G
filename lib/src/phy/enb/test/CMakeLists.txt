@@ -18,7 +18,15 @@
 # and at http://www.gnu.org/licenses/.
 #
 
-file(GLOB SOURCES "*.c")
-add_library(srsran_enb OBJECT ${SOURCES})
+# NB-IoT downlink composer on top of a real LTE downlink, against an independent transmitter written from the spec
+add_executable(enb_dl_nbiot_dump enb_dl_nbiot_dump.c)
+target_link_libraries(enb_dl_nbiot_dump srsran_phy)
 
-add_subdirectory(test)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  add_test(NAME enb_dl_nbiot_python
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/enb_dl_nbiot_check.py
+                   $<TARGET_FILE:enb_dl_nbiot_dump> ${CMAKE_CURRENT_SOURCE_DIR}/../../sync/test
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../../phch/test)
+  set_tests_properties(enb_dl_nbiot_python PROPERTIES LABELS "lib;phy;enb")
+endif()

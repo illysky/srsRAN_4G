@@ -20,6 +20,7 @@
  */
 
 #include "srsran/phy/phch/ra_nbiot.h"
+#include "srsran/phy/phch/nbiot_grid.h"
 #include "srsran/phy/common/phy_common.h"
 #include "srsran/phy/utils/bit.h"
 #include "srsran/phy/utils/debug.h"
@@ -78,42 +79,11 @@ const int ack_nack_resource_field_to_k0[SRSRAN_NPUSCH_SC_SPACING_NITEMS][16] = {
     {13, 13, 13, 13, 15, 15, 15, 15, 17, 17, 17, 17, 18, 18, 18, 18},
     {13, 13, 13, 13, 13, 13, 13, 13, 21, 21, 21, 21, 21, 21, 21, 21}};
 
-/// Calculate the number of resource elements per subframe that carry data
+/// Calculate the number of resource elements per subframe that carry data: the ones from symbol l_start on that hold
+/// neither NRS nor, in band, LTE CRS (the same mask the NPDSCH mapping uses)
 uint32_t srsran_ra_nbiot_dl_grant_nof_re(srsran_nbiot_cell_t cell, uint32_t l_start)
 {
-  /// start with one full PRB
-  uint32_t re = SRSRAN_CP_NORM_SF_NSYMB * SRSRAN_NRE;
-
-  /// remove lstart number of symbols
-  re -= l_start * SRSRAN_NRE;
-
-  /// remove NRS
-  switch (cell.nof_ports) {
-    case 1:
-    case 2:
-      re -= 8 * cell.nof_ports;
-      break;
-    case 4:
-      printf("ERROR: 4 ports are not supported for NB-IoT\n");
-      break;
-  }
-
-  /// remove CRS for inband deployments
-  if (cell.mode <= SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI) {
-    switch (cell.base.nof_ports) {
-      case 1:
-      case 2:
-        re -= 8 * cell.base.nof_ports;
-        // first two symbols used for CRS
-        if (l_start >= 2)
-          re += (4 * cell.base.nof_ports) / 2;
-        break;
-      case 4:
-        re -= 8 * 3;
-        break;
-    }
-  }
-  return re;
+  return srsran_nbiot_grid_nof_data_re(&cell, l_start);
 }
 
 void srsran_ra_nbiot_dl_grant_to_nbits(srsran_ra_nbiot_dl_grant_t* grant,

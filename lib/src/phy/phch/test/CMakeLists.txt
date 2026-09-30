@@ -206,6 +206,9 @@ target_link_libraries(nprach_vectors_test srsran_phy)
 # NPBCH transmitter against TS 36.211 10.2.4.4 (per-frame rotation, stateless encoder)
 add_executable(npbch_tx_dump npbch_tx_dump.c)
 target_link_libraries(npbch_tx_dump srsran_phy)
+# Where the eNB puts SIB1-NB and SI messages (TS 36.213 16.4.1.3, TS 36.331 5.2.1.2a / 5.2.3a)
+add_executable(nbiot_sched_dump nbiot_sched_dump.c)
+target_link_libraries(nbiot_sched_dump srsran_phy)
 
 # NPUSCH: the independent Python model against the library's coding blocks
 add_executable(npusch_fec_dump npusch_fec_dump.c)
@@ -222,6 +225,9 @@ if(Python3_FOUND)
   add_test(NAME npbch_tx_python
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npbch_tx_check.py $<TARGET_FILE:npbch_tx_dump>)
   set_tests_properties(npbch_tx_python PROPERTIES LABELS "lib;phy;phch")
+  add_test(NAME nbiot_sched_python
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_sched_check.py $<TARGET_FILE:nbiot_sched_dump>)
+  set_tests_properties(nbiot_sched_python PROPERTIES LABELS "lib;phy;phch")
   add_test(NAME nbiot_ra_python
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_ra_check.py $<TARGET_FILE:nbiot_ra_dump> $<TARGET_FILE:npusch_rx_dump>)
   set_tests_properties(nbiot_ra_python PROPERTIES LABELS "lib;phy;phch")
@@ -483,6 +489,14 @@ add_lte_test(npdsch_test_cellid2_inband_diffpci_2port_2port npdsch_test -l 2 -M 
 add_lte_test(npdsch_test_cellid3_inband_diffpci_2port_2port npdsch_test -l 3 -M 1 -p 2 -P 2 -x 136)
 add_lte_test(npdsch_test_cellid4_inband_diffpci_2port_2port npdsch_test -l 4 -M 1 -p 2 -P 2 -x 136)
 add_lte_test(npdsch_test_cellid5_inband_diffpci_2port_2port npdsch_test -l 5 -M 1 -p 2 -P 2 -x 136)
+
+# Inband same PCI, PCIs beyond 0-5 (the original mapping heuristics were wrong for these), and every
+# control region size 0..5 (checked inside the test against a closed-form RE count).
+add_lte_test(npdsch_test_cellid11_inband_1port_1port npdsch_test -l 11 -M 0 -p 1 -P 1 -x 152)
+add_lte_test(npdsch_test_cellid251_inband_1port_1port npdsch_test -l 251 -M 0 -p 1 -P 1 -x 152)
+add_lte_test(npdsch_test_cellid503_inband_1port_1port npdsch_test -l 503 -M 0 -p 1 -P 1 -x 152)
+add_lte_test(npdsch_test_cellid1_inband_lte4port_nb1port npdsch_test -l 1 -M 0 -p 4 -P 1 -x 136)
+add_lte_test(npdsch_test_cellid11_inband_lte4port_nb2port npdsch_test -l 11 -M 0 -p 4 -P 2 -x 128)
 
 ########################################################################
 # NB-IoT DCI TEST

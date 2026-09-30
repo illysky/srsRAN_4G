@@ -257,6 +257,41 @@ int re_extract_test(int argc, char** argv)
     return SRSRAN_ERROR;
   }
 
+  if (mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI) {
+    // In-band, every control region size: count the REs with a closed form that only uses the symbol positions of
+    // the NRS (TS 36.211 10.2.6, l = 5, 6, 12, 13, two REs per port) and the LTE CRS (6.10.1.2, ports 0/1 in
+    // l = 0, 4, 7, 11 and ports 2/3 in l = 1, 8, two REs per port), which never share a symbol.
+    // This does not use nbiot_grid, so a bug there cannot hide from it.
+    for (uint32_t ls = 0; ls <= 5; ls++) {
+      uint32_t expected = 12 * (SRSRAN_CP_NORM_SF_NSYMB - ls);
+      for (uint32_t l = ls; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
+        if (l == 5 || l == 6 || l == 12 || l == 13) {
+          expected -= 2 * nof_ports_nbiot;
+        }
+        if (l == 0 || l == 4 || l == 7 || l == 11) {
+          expected -= 2 * (nof_ports_lte > 1 ? 2 : 1);
+        }
+        if ((l == 1 || l == 8) && nof_ports_lte == 4) {
+          expected -= 4;
+        }
+      }
+      srsran_npdsch_t npdsch = {};
+      npdsch.cell            = cell;
+      cf_t sf_syms[SRSRAN_NBIOT_NOF_RE_X_PRB];
+      for (int i = 0; i < SRSRAN_NBIOT_NOF_RE_X_PRB; i++) {
+        sf_syms[i] = i;
+      }
+      srsran_ra_nbiot_dl_grant_t grant = {};
+      grant.l_start                    = ls;
+      cf_t out[SRSRAN_NPDSCH_MAX_RE];
+      int  n = srsran_npdsch_cp(&npdsch, sf_syms, out, &grant, false);
+      if (n != (int)expected) {
+        printf("In-band RE count for l_start=%u: expected %u, got %d\n", ls, expected, n);
+        return SRSRAN_ERROR;
+      }
+    }
+  }
+
   return SRSRAN_SUCCESS;
 }
 

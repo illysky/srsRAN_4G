@@ -33,6 +33,7 @@
 #include "srsran/phy/phch/npdsch.h"
 #include "srsran/phy/utils/bit.h"
 #include "srsran/phy/utils/debug.h"
+#include "srsran/phy/phch/nbiot_grid.h"
 #include "srsran/phy/utils/vector.h"
 
 #define CURRENT_SFLEN_RE SRSRAN_SF_LEN_RE(q->cell.base.nof_prb, q->cell.base.cp)
@@ -42,39 +43,9 @@
 
 int srsran_npdsch_cp(srsran_npdsch_t* q, cf_t* input, cf_t* output, srsran_ra_nbiot_dl_grant_t* grant, bool put)
 {
-  uint32_t l, nof_lte_refs, nof_nbiot_refs;
-  cf_t *   in_ptr = input, *out_ptr = output;
-
-#if RE_EXT_DEBUG
-  int num_extracted = 0;
-#endif
-
   // sanity check
   if (q == NULL || input == NULL || output == NULL || grant == NULL) {
     return 0;
-  }
-
-  if (put) {
-    out_ptr += (grant->l_start * q->cell.base.nof_prb * SRSRAN_NRE) + q->cell.nbiot_prb * SRSRAN_NRE;
-  } else {
-    in_ptr += (grant->l_start * q->cell.base.nof_prb * SRSRAN_NRE) + q->cell.nbiot_prb * SRSRAN_NRE;
-  }
-
-  if (q->cell.nof_ports == 1) {
-    nof_nbiot_refs = 2;
-  } else {
-    nof_nbiot_refs = 4;
-  }
-
-  if (q->cell.base.nof_ports == 1) {
-    nof_lte_refs = 2;
-  } else {
-    nof_lte_refs = 4;
-  }
-
-  bool skip_crs = false;
-  if (q->cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI || q->cell.mode == SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI) {
-    skip_crs = true;
   }
 
   if (q->cell.mode == SRSRAN_NBIOT_MODE_INBAND_SAME_PCI && q->cell.n_id_ncell != q->cell.base.id) {
@@ -85,83 +56,32 @@ int srsran_npdsch_cp(srsran_npdsch_t* q, cf_t* input, cf_t* output, srsran_ra_nb
     return 0;
   }
 
-  // Number of REs between the end of the NB-IoT PRB in one OFDM symbol and its start in the next. This is zero when the
-  // grid is just the NB-IoT PRB (standalone) and (nof_prb - 1) * 12 for in-band operation inside a wider LTE carrier.
-  const uint32_t row_skip = (q->cell.base.nof_prb - 1) * SRSRAN_NRE;
+  // TS 36.211 10.2.3.4: the resource elements of the subframe from symbol l_DataStart on that are neither NRS nor (in
+  // band) CRS, in increasing order of first the subcarrier and then the symbol. The mask comes from the reference signal
+  // formulae rather than from pointer arithmetic, which used to go wrong for some cell ids.
+  bool reserved[SRSRAN_CP_NORM_SF_NSYMB][SRSRAN_NRE];
+  srsran_nbiot_reserved_res(&q->cell, reserved);
 
-  // start mapping at specified OFDM symbol
-  for (l = grant->l_start; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
-    // Extra REs to advance so the grid pointer ends up at the end of the PRB: reference-signal-aware copies can stop
-    // one RE short when a reference RE is the last one of the PRB. (Previously the reference branches *overwrote*
-    // the row skip with this 0/1 value, which only works when the grid is a single PRB wide: in-band data then
-    // walked into the neighbouring PRBs of the LTE carrier.)
-    uint32_t delta  = 0;
-    uint32_t offset = 0; // the number of REs left out before start of the REF signal RE
-    if (l == 5 || l == 6 || l == 12 || l == 13) {
-      // always skip NRS
-      if (nof_nbiot_refs == 2) {
-        if (l == 5 || l == 12) {
-          offset = q->cell.n_id_ncell % 6;
-          delta  = q->cell.n_id_ncell % 6 == 5 ? 1 : 0;
-        } else {
-          offset = (q->cell.n_id_ncell + 3) % 6;
-          delta  = (q->cell.n_id_ncell + 3) % 6 == 5 ? 1 : 0;
-        }
-      } else if (nof_nbiot_refs == 4) {
-        offset = q->cell.n_id_ncell % 3;
-        delta  = (q->cell.n_id_ncell + ((q->cell.n_id_ncell >= 5) ? 0 : 3)) % 6 == 5 ? 1 : 0;
-      } else {
-        fprintf(stderr, "Error %d NB-IoT reference symbols not supported.\n", nof_nbiot_refs);
-        return SRSRAN_ERROR;
+  // the grid is the whole LTE carrier for in-band operation and just the NB-IoT PRB otherwise
+  const uint32_t grid_width = q->cell.base.nof_prb * SRSRAN_NRE;
+  const uint32_t first_col  = q->cell.nbiot_prb * SRSRAN_NRE;
+
+  uint32_t n = 0;
+  for (uint32_t l = grant->l_start; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
+    for (uint32_t k = 0; k < SRSRAN_NRE; k++) {
+      if (reserved[l][k]) {
+        continue;
       }
-      prb_cp_ref(&in_ptr, &out_ptr, offset, nof_nbiot_refs, nof_nbiot_refs, put);
-    } else if ((l == 0 || l == 4 || l == 7 || l == 11) && skip_crs) {
-      // skip LTE's CRS (TODO: use base cell ID?)
-      if (nof_lte_refs == 2) {
-        if (l == 0 || l == 7) {
-          offset = q->cell.base.id % 6;
-          delta  = (q->cell.base.id + 3) % 6 == 2 ? 1 : 0;
-        } else if (l == 4 || l == 11) {
-          offset = (q->cell.base.id + 3) % 6;
-          delta  = (q->cell.base.id + ((q->cell.base.id <= 5) ? 3 : 0)) % 6 == 5 ? 1 : 0;
-        }
+      uint32_t idx = l * grid_width + first_col + k;
+      if (put) {
+        output[idx] = input[n];
       } else {
-        offset = q->cell.base.id % 3;
-        delta  = q->cell.base.id % 3 == 2 ? 1 : 0;
+        output[n] = input[idx];
       }
-      prb_cp_ref(&in_ptr, &out_ptr, offset, nof_lte_refs, nof_lte_refs, put);
-    } else {
-      // occupy entire symbol
-      prb_cp(&in_ptr, &out_ptr, 1);
+      n++;
     }
-
-    // finish this symbol and move to the same PRB in the next one
-    if (put) {
-      out_ptr += delta + row_skip;
-    } else {
-      in_ptr += delta + row_skip;
-    }
-
-#if RE_EXT_DEBUG
-    printf("\nl=%d, delta=%d offset=%d\n", l, delta, offset);
-    uint32_t num_extracted_this_sym = abs((int)(output - out_ptr)) - num_extracted;
-    printf("  - extracted total of %d RE after symbol %d (this symbol=%d)\n",
-           abs((int)(output - out_ptr)),
-           l,
-           num_extracted_this_sym);
-    srsran_vec_fprint_c(stdout, &output[num_extracted], num_extracted_this_sym);
-    num_extracted = abs((int)(output - out_ptr));
-#endif
   }
-
-  int r;
-  if (put) {
-    r = abs((int)(input - in_ptr));
-  } else {
-    r = abs((int)(output - out_ptr));
-  }
-
-  return r;
+  return (int)n;
 }
 
 /**
