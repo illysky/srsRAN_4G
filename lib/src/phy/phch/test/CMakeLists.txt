@@ -203,6 +203,10 @@ endif()
 set(NPRACH_VECTORS_DIR "$ENV{HOME}/src/reference/NPRACH_DETECTOR" CACHE PATH "checkout of Pk8598/NPRACH_DETECTOR")
 add_executable(nprach_vectors_test nprach_vectors_test.c)
 target_link_libraries(nprach_vectors_test srsran_phy)
+# NPBCH transmitter against TS 36.211 10.2.4.4 (per-frame rotation, stateless encoder)
+add_executable(npbch_tx_dump npbch_tx_dump.c)
+target_link_libraries(npbch_tx_dump srsran_phy)
+
 # NPUSCH: the independent Python model against the library's coding blocks
 add_executable(npusch_fec_dump npusch_fec_dump.c)
 target_link_libraries(npusch_fec_dump srsran_phy)
@@ -215,6 +219,9 @@ if(Python3_FOUND)
   add_test(NAME npusch_receiver
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npusch_rx_check.py $<TARGET_FILE:npusch_rx_dump> quick)
   set_tests_properties(npusch_receiver PROPERTIES LABELS "lib;phy;phch")
+  add_test(NAME npbch_tx_python
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/npbch_tx_check.py $<TARGET_FILE:npbch_tx_dump>)
+  set_tests_properties(npbch_tx_python PROPERTIES LABELS "lib;phy;phch")
   add_test(NAME nbiot_ra_python
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_ra_check.py $<TARGET_FILE:nbiot_ra_dump> $<TARGET_FILE:npusch_rx_dump>)
   set_tests_properties(nbiot_ra_python PROPERTIES LABELS "lib;phy;phch")

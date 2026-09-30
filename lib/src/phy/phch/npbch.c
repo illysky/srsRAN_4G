@@ -95,6 +95,11 @@ int srsran_npbch_init(srsran_npbch_t* q)
         fprintf(stderr, "Error allocating memory.\n");
         goto clean;
       }
+      q->tx_rot[i] = srsran_vec_cf_malloc(q->nof_symbols);
+      if (!q->tx_rot[i]) {
+        fprintf(stderr, "Error allocating memory.\n");
+        goto clean;
+      }
       q->symbols[i] = srsran_vec_cf_malloc(q->nof_symbols * SRSRAN_NPBCH_NUM_FRAMES);
       if (!q->symbols[i]) {
         fprintf(stderr, "Error allocating memory.\n");
@@ -137,6 +142,9 @@ void srsran_npbch_free(srsran_npbch_t* q)
     }
     if (q->x[i]) {
       free(q->x[i]);
+    }
+    if (q->tx_rot[i]) {
+      free(q->tx_rot[i]);
     }
     if (q->symbols[i]) {
       free(q->symbols[i]);
@@ -299,6 +307,86 @@ int srsran_npbch_put_subframe(srsran_npbch_t* q,
   return srsran_npbch_encode(q, bch_payload, sf, frame_idx);
 }
 
+int srsran_npbch_rotate(srsran_npbch_t* q,
+                        uint32_t        nf,
+                        cf_t*           input_signal,
+                        cf_t*           output_signal,
+                        int             num_samples,
+                        bool            back);
+
+/* Encoder building blocks, shared by the streaming and the stateless entry point. */
+
+/// CRC, tail-biting convolutional coding and rate matching of the whole 640 ms MIB-NB into q->rm_b (8 blocks).
+static void npbch_encode_bits(srsran_npbch_t* q, const uint8_t bch_payload[SRSRAN_MIB_NB_LEN])
+{
+  int nof_bits = 2 * q->nof_symbols;
+
+  memcpy(q->data, bch_payload, sizeof(uint8_t) * SRSRAN_MIB_NB_LEN);
+  srsran_crc_attach(&q->crc, q->data, SRSRAN_MIB_NB_LEN);
+  srsran_npbch_crc_set_mask(q->data, q->cell.nof_ports);
+  srsran_convcoder_encode(&q->encoder, q->data, q->data_enc, SRSRAN_MIB_NB_CRC_LEN);
+  srsran_rm_conv_tx(q->data_enc, SRSRAN_MIB_NB_ENC_LEN, q->rm_b, SRSRAN_NPBCH_NUM_BLOCKS * nof_bits);
+}
+
+/// Scramble, modulate and precode block block_idx of q->rm_b into q->symbols (unrotated).
+static void npbch_modulate_block(srsran_npbch_t* q, int block_idx)
+{
+  cf_t* x[SRSRAN_MAX_LAYERS];
+  int   nof_bits = 2 * q->nof_symbols;
+
+  // number of layers equals number of ports
+  for (int i = 0; i < q->cell.nof_ports; i++) {
+    x[i] = q->x[i];
+  }
+  memset(&x[q->cell.nof_ports], 0, sizeof(cf_t*) * (SRSRAN_MAX_LAYERS - q->cell.nof_ports));
+
+  srsran_scrambling_b_offset(&q->seq, &q->rm_b[block_idx * nof_bits], block_idx * nof_bits, nof_bits);
+  srsran_mod_modulate(&q->mod, &q->rm_b[block_idx * nof_bits], q->d, nof_bits);
+
+  // layer mapping & precoding
+  if (q->cell.nof_ports > 1) {
+    srsran_layermap_diversity(q->d, x, q->cell.nof_ports, q->nof_symbols);
+    srsran_precoding_diversity(x, q->symbols, q->cell.nof_ports, q->nof_symbols / q->cell.nof_ports, 1.0);
+  } else {
+    memcpy(q->symbols[0], q->d, q->nof_symbols * sizeof(cf_t));
+  }
+}
+
+/// Apply the per-frame rotation theta_f (TS 36.211 10.2.4.4) to a COPY of the block and map it into the subframe.
+/// q->symbols must stay untouched: the same block is transmitted in 8 consecutive frames, each with its own theta_f,
+/// applied to the unrotated symbols. (Rotating q->symbols in place would accumulate theta_0..theta_f, which is wrong.)
+static int npbch_map_frame(srsran_npbch_t* q, cf_t* sf[SRSRAN_MAX_PORTS], uint32_t frame_idx, int block_idx)
+{
+  // Write exactly SRSRAN_NPBCH_NUM_RE (assumes symbols have been modulated before)
+  for (int i = 0; i < q->cell.nof_ports; i++) {
+    cf_t* src = q->symbols[i];
+    if (q->cell.is_r14) {
+      DEBUG("Applying phase rotation on port %d in frame %d.", i, frame_idx);
+      srsran_npbch_rotate(q, frame_idx, q->symbols[i], q->tx_rot[i], q->nof_symbols, false);
+      src = q->tx_rot[i];
+    }
+    DEBUG("Putting MIB-NB block %d on port %d in frame %d.", block_idx, i, frame_idx);
+    if (srsran_npbch_cp(src, sf[i], q->cell, true) != SRSRAN_NPBCH_NUM_RE) {
+      INFO("Error while mapping NPBCH symbols.");
+      return SRSRAN_ERROR;
+    }
+  }
+  return SRSRAN_SUCCESS;
+}
+
+static bool npbch_tx_inputs_ok(srsran_npbch_t* q, uint8_t* bch_payload, cf_t* sf[SRSRAN_MAX_PORTS])
+{
+  if (q == NULL || bch_payload == NULL || q->cell.nof_ports == 0) {
+    return false;
+  }
+  for (int i = 0; i < q->cell.nof_ports; i++) {
+    if (sf[i] == NULL) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Converts the MIB-NB message to symbols mapped to the first subframe,
  *  The MIB-NB is split over 8 blocks, each of which is repeated 8 times, always in SF0,
  *  it therefore lasts for 640ms.
@@ -308,71 +396,41 @@ int srsran_npbch_encode(srsran_npbch_t* q,
                         cf_t*           sf[SRSRAN_MAX_PORTS],
                         uint32_t        frame_idx)
 {
-  int   block_idx = (frame_idx / SRSRAN_NPBCH_NUM_REP) % SRSRAN_NPBCH_NUM_BLOCKS;
-  cf_t* x[SRSRAN_MAX_LAYERS];
+  int block_idx = (frame_idx / SRSRAN_NPBCH_NUM_REP) % SRSRAN_NPBCH_NUM_BLOCKS;
 
-  if (q != NULL && bch_payload != NULL && q->cell.nof_ports != 0) {
-    for (int i = 0; i < q->cell.nof_ports; i++) {
-      if (sf[i] == NULL) {
-        return SRSRAN_ERROR_INVALID_INPUTS;
-      }
-    }
-    // Set pointers for layermapping & precoding
-    int nof_bits = 2 * q->nof_symbols;
-
-    // number of layers equals number of ports
-    for (int i = 0; i < q->cell.nof_ports; i++) {
-      x[i] = q->x[i];
-    }
-    memset(&x[q->cell.nof_ports], 0, sizeof(cf_t*) * (SRSRAN_MAX_LAYERS - q->cell.nof_ports));
-
-    // generate new BCH message every 64 frames
-    if ((frame_idx % SRSRAN_NPBCH_NUM_FRAMES) == 0) {
-      INFO("Encoding new NPBCH signal in frame %d.", frame_idx);
-
-      memcpy(q->data, bch_payload, sizeof(uint8_t) * SRSRAN_MIB_NB_LEN);
-
-      // encode and rate-match
-      srsran_crc_attach(&q->crc, q->data, SRSRAN_MIB_NB_LEN);
-      srsran_npbch_crc_set_mask(q->data, q->cell.nof_ports);
-
-      srsran_convcoder_encode(&q->encoder, q->data, q->data_enc, SRSRAN_MIB_NB_CRC_LEN);
-
-      srsran_rm_conv_tx(q->data_enc, SRSRAN_MIB_NB_ENC_LEN, q->rm_b, SRSRAN_NPBCH_NUM_BLOCKS * nof_bits);
-    }
-
-    // Scramble and modulate a new block every 8 frames
-    if (frame_idx % SRSRAN_NPBCH_NUM_REP == 0) {
-      INFO("Modulating MIB-NB block %d in frame %d.", block_idx, frame_idx);
-      srsran_scrambling_b_offset(&q->seq, &q->rm_b[block_idx * nof_bits], block_idx * nof_bits, nof_bits);
-      srsran_mod_modulate(&q->mod, &q->rm_b[block_idx * nof_bits], q->d, nof_bits);
-
-      // layer mapping & precoding
-      if (q->cell.nof_ports > 1) {
-        srsran_layermap_diversity(q->d, x, q->cell.nof_ports, q->nof_symbols);
-        srsran_precoding_diversity(x, q->symbols, q->cell.nof_ports, q->nof_symbols / q->cell.nof_ports, 1.0);
-      } else {
-        memcpy(q->symbols[0], q->d, q->nof_symbols * sizeof(cf_t));
-      }
-    }
-
-    // Write exactly SRSRAN_NPBCH_NUM_RE (assumes symbols have been modulated before)
-    for (int i = 0; i < q->cell.nof_ports; i++) {
-      if (q->cell.is_r14) {
-        DEBUG("Applying phase rotation on port %d in frame %d.", i, frame_idx);
-        srsran_npbch_rotate(q, frame_idx, q->symbols[i], q->symbols[i], q->nof_symbols, false);
-      }
-      DEBUG("Putting MIB-NB block %d on port %d in frame %d.", block_idx, i, frame_idx);
-      if (srsran_npbch_cp(q->symbols[i], sf[i], q->cell, true) != SRSRAN_NPBCH_NUM_RE) {
-        INFO("Error while mapping NPBCH symbols.");
-        return SRSRAN_ERROR;
-      }
-    }
-
-    return SRSRAN_SUCCESS;
-  } else {
+  if (!npbch_tx_inputs_ok(q, bch_payload, sf)) {
     return SRSRAN_ERROR_INVALID_INPUTS;
   }
+
+  // generate new BCH message every 64 frames
+  if ((frame_idx % SRSRAN_NPBCH_NUM_FRAMES) == 0) {
+    INFO("Encoding new NPBCH signal in frame %d.", frame_idx);
+    npbch_encode_bits(q, bch_payload);
+  }
+
+  // Scramble and modulate a new block every 8 frames
+  if (frame_idx % SRSRAN_NPBCH_NUM_REP == 0) {
+    INFO("Modulating MIB-NB block %d in frame %d.", block_idx, frame_idx);
+    npbch_modulate_block(q, block_idx);
+  }
+
+  return npbch_map_frame(q, sf, frame_idx, block_idx);
+}
+
+int srsran_npbch_encode_sf(srsran_npbch_t* q,
+                           uint8_t         bch_payload[SRSRAN_MIB_NB_LEN],
+                           cf_t*           sf[SRSRAN_MAX_PORTS],
+                           uint32_t        frame_idx)
+{
+  int block_idx = (frame_idx / SRSRAN_NPBCH_NUM_REP) % SRSRAN_NPBCH_NUM_BLOCKS;
+
+  if (!npbch_tx_inputs_ok(q, bch_payload, sf)) {
+    return SRSRAN_ERROR_INVALID_INPUTS;
+  }
+
+  npbch_encode_bits(q, bch_payload);
+  npbch_modulate_block(q, block_idx);
+  return npbch_map_frame(q, sf, frame_idx, block_idx);
 }
 
 int srsran_npbch_rotate(srsran_npbch_t* q,

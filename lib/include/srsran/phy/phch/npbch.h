@@ -72,6 +72,7 @@ typedef struct SRSRAN_API {
   // buffers
   cf_t*    ce[SRSRAN_MAX_PORTS];
   cf_t*    symbols[SRSRAN_MAX_PORTS];
+  cf_t*    tx_rot[SRSRAN_MAX_PORTS]; ///< transmit-side scratch: the current frame's symbols after the theta_f rotation
   cf_t*    x[SRSRAN_MAX_PORTS];
   cf_t*    d;
   float*   llr;
@@ -112,10 +113,21 @@ SRSRAN_API int srsran_npbch_put_subframe(srsran_npbch_t* q,
                                          cf_t*           sf[SRSRAN_MAX_PORTS],
                                          uint32_t        frame_idx);
 
+/// Streaming encoder: must be called for every frame in order. It re-encodes only every 64 (bits) / 8 (block) frames
+/// and reuses the cached block in between, so it is NOT safe to call for arbitrary frames or from several threads.
 SRSRAN_API int srsran_npbch_encode(srsran_npbch_t* q,
                                    uint8_t         bch_payload[SRSRAN_MIB_NB_LEN],
                                    cf_t*           sf[SRSRAN_MAX_PORTS],
                                    uint32_t        frame_idx);
+
+/// Stateless encoder: recomputes CRC, coding, rate matching, scrambling and modulation from bch_payload for the
+/// block that frame_idx belongs to, so any frame can be produced on its own, in any order. bch_payload must be the MIB
+/// packed for the 64-frame period containing frame_idx (srsran_npbch_mib_pack with the SFN rounded down to a multiple
+/// of 64). Output is identical to the streaming encoder. Not reentrant on the same q (it uses q's scratch buffers).
+SRSRAN_API int srsran_npbch_encode_sf(srsran_npbch_t* q,
+                                      uint8_t         bch_payload[SRSRAN_MIB_NB_LEN],
+                                      cf_t*           sf[SRSRAN_MAX_PORTS],
+                                      uint32_t        frame_idx);
 
 int srsran_npbch_rotate(srsran_npbch_t* q,
                         uint32_t        nf,
