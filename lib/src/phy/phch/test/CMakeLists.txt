@@ -210,6 +210,10 @@ target_link_libraries(npbch_tx_dump srsran_phy)
 add_executable(nbiot_sched_dump nbiot_sched_dump.c)
 target_link_libraries(nbiot_sched_dump srsran_phy)
 
+# NPDCCH / NPDSCH addressed to an RNTI, and where their subframes go (TS 36.211 10.2.3, 10.2.5; TS 36.213 16.4.1, 16.6)
+add_executable(nbiot_dlch_dump nbiot_dlch_dump.c)
+target_link_libraries(nbiot_dlch_dump srsran_phy)
+
 # NPUSCH: the independent Python model against the library's coding blocks
 add_executable(npusch_fec_dump npusch_fec_dump.c)
 target_link_libraries(npusch_fec_dump srsran_phy)
@@ -228,6 +232,10 @@ if(Python3_FOUND)
   add_test(NAME nbiot_sched_python
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_sched_check.py $<TARGET_FILE:nbiot_sched_dump>)
   set_tests_properties(nbiot_sched_python PROPERTIES LABELS "lib;phy;phch")
+  add_test(NAME nbiot_dlch_python
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_dlch_check.py $<TARGET_FILE:nbiot_dlch_dump>
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../../enb/test)
+  set_tests_properties(nbiot_dlch_python PROPERTIES LABELS "lib;phy;phch")
   add_test(NAME nbiot_ra_python
            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_ra_check.py $<TARGET_FILE:nbiot_ra_dump> $<TARGET_FILE:npusch_rx_dump>)
   set_tests_properties(nbiot_ra_python PROPERTIES LABELS "lib;phy;phch")

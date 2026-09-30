@@ -20,6 +20,9 @@ Modelled, each from the clause in brackets
          QPSK, mapping over N_SF subframes, NRS/CRS exclusion, l_DataStart   (36.212 5.1.1; 36.211 10.2.3)
   Where SIB1-NB and the SI messages are: the forward simulation of nbiot_sched_check.py
   CRS wins over anything NB-IoT puts on the same RE (10.2.7.1.2)
+  With "dyn": NPDCCH and NPDSCH addressed to an RNTI, planned by the eNB over the valid NB-IoT downlink subframes and
+  handed to the composer through the shared table -- expected content from nbiot_dlch_check.py (channel coding, scrambling,
+  mapping) and its planning model, including refusals of transmissions that overlap one already stored
 
 It also requires that nothing outside the anchor PRB data region changes, that LTE data put there by mistake is
 blanked (the "junk" runs) and counted, and that the composer's own report of what each subframe holds matches.
@@ -36,6 +39,7 @@ TOL = 2e-5
 R2 = 1 / math.sqrt(2)
 
 HAS_NPSS, HAS_NSSS, HAS_NRS, HAS_NPBCH, HAS_SIB1, HAS_SI = 1, 2, 4, 8, 16, 32
+HAS_NPDCCH, HAS_NPDSCH = 64, 128
 
 
 # ------------------------------------------------------------------------------------------ TS 36.211 7.2
@@ -188,6 +192,7 @@ def nrs_values(pci, sf):
 
 class Model:
     def __init__(self, pci, sched, hfn, sync, sched_mod, mib_bits, sib1, si_list):
+        self.dyn = {}          # absolute subframe -> (flag, {(l, k): value})
         self.pci, self.sched, self.hfn = pci, sched, hfn
         self.sync = sync
         self.sm = sched_mod
@@ -306,6 +311,15 @@ class Model:
                     flags |= HAS_SI
                     break
 
+        t_abs = (self.hfn * 1024 + sfn) * 10 + sf
+        if t_abs in self.dyn:
+            assert flags & (HAS_NPSS | HAS_NSSS | HAS_NPBCH | HAS_SIB1 | HAS_SI) == 0, \
+                'dynamic transmission planned onto a broadcast subframe %d.%d' % (sfn, sf)
+            dflag, cells = self.dyn[t_abs]
+            for (l, k), v in cells.items():
+                g[l, k] = v
+            flags |= dflag
+
         # CRS wins
         for (l, k) in self.crs:
             g[l, k] = pre[l, k]
@@ -331,16 +345,69 @@ def parse_stdout(text):
             out['flags'][(int(p[1]), int(p[2]))] = int(p[3])
         elif p[0] == 'COLL':
             out['coll'] = int(p[1])
+        elif p[0] == 'DYN_CONFLICTS':
+            out['dyn_conflicts'] = int(p[1])
+        elif p[0] == 'DYN':
+            out.setdefault('dyn', []).append(p[1:])
         elif p[0] == 'OUTSIDE_DIFF':
             out['outside'] = int(p[1])
     return out
 
 
-def run_case(dump, sync, sched_mod, name, nof_prb, anchor, pci, sched, hfn, nframes, junk):
+def register_dynamic(model, info, dlch_mod, prim, nof_prb, name):
+    """Replays the DYN lines of the dump with the planning model; returns the number of failures found."""
+    valid = dlch_mod.make_valid(model.sm, model.pci, model.sched, [tuple(c) for c, _ in model.si_list])
+    ch = dlch_mod.Channels(prim, nof_prb, 0, model.pci)
+    occupied = set()
+    bad = 0
+    stored_pdcch = 0
+    stored_pdsch = 0
+    refused = 0
+    last_ok = None
+    for item in info.get('dyn', []):
+        if item[0] == 'NPDCCH':
+            rnti, dci = int(item[1]), [int(c) for c in item[2]]
+            k0, r, ok = int(item[3]), int(item[4]), int(item[5])
+            plan = dlch_mod.model_plan_npdcch(valid, k0, r)
+            want_ok = not any(t in occupied for t, _, _ in plan)
+            if ok != want_ok:
+                print('  FAIL %s: NPDCCH at %d (R=%d): table said %d, model expects %d' % (name, k0, r, ok, want_ok))
+                bad += 1
+            last_ok = None
+            if ok:
+                stored_pdcch += 1
+                last_ok = (rnti, plan, dci)
+                for t, reinit, pos in plan:
+                    occupied.add(t)
+                    _, grid = ch.npdcch_grid(dci, rnti, reinit, pos)
+                    model.dyn[t] = (HAS_NPDCCH, grid)
+            else:
+                refused += 1
+        else:
+            rnti, tb = int(item[1]), bytes.fromhex(item[2])
+            n_last, k0, n_sf, n_rep, ok = int(item[3]), int(item[4]), int(item[5]), int(item[6]), int(item[7])
+            plan = dlch_mod.model_plan_npdsch(valid, n_last, k0, n_sf, n_rep)
+            want_ok = not any(t in occupied for t, _, _, _ in plan)
+            if ok != want_ok:
+                print('  FAIL %s: NPDSCH after %d: table said %d, model expects %d' % (name, n_last, ok, want_ok))
+                bad += 1
+            tb_bits = [(b >> (7 - i)) & 1 for b in tb for i in range(8)]
+            if ok:
+                stored_pdsch += 1
+                for t, cw, psfn, psf in plan:
+                    occupied.add(t)
+                    _, grid = ch.npdsch_grid(tb_bits, rnti, n_sf, cw, psfn, psf)
+                    model.dyn[t] = (HAS_NPDSCH, grid)
+            else:
+                refused += 1
+    return bad, stored_pdcch, stored_pdsch, refused
+
+
+def run_case(dump, sync, sched_mod, name, nof_prb, anchor, pci, sched, hfn, nframes, junk, dyn=0):
     with tempfile.TemporaryDirectory() as td:
         binf = os.path.join(td, 'grid.bin')
         res = subprocess.run([dump, binf, str(nof_prb), str(anchor), str(pci), str(sched), str(hfn), str(nframes),
-                              str(junk)], capture_output=True, text=True)
+                              str(junk)] + (['1'] if dyn else []), capture_output=True, text=True)
         if res.returncode != 0:
             print('FAIL %s: dump exited %d: %s' % (name, res.returncode, res.stderr.strip()))
             return None
@@ -350,7 +417,19 @@ def run_case(dump, sync, sched_mod, name, nof_prb, anchor, pci, sched, hfn, nfra
     model = Model(pci, sched, hfn, sync, sched_mod, info['mib'], info['sib1'], info['si'])
     model.prepare_si(hfn * 1024, hfn * 1024 + nframes + 4)
 
-    stats = {'re': 0, 'bad': 0, 'sf': 0, 'kinds': {HAS_NPSS: 0, HAS_NSSS: 0, HAS_NPBCH: 0, HAS_SIB1: 0, HAS_SI: 0}}
+    stats = {'re': 0, 'bad': 0, 'sf': 0, 'kinds': {HAS_NPSS: 0, HAS_NSSS: 0, HAS_NPBCH: 0, HAS_SIB1: 0, HAS_SI: 0,
+                                                   HAS_NPDCCH: 0, HAS_NPDSCH: 0}}
+    if dyn:
+        import nbiot_dlch_check as dlch_mod
+        prim = sys.modules['__main__'] if 'enb_dl_nbiot_check' not in sys.modules else sys.modules['enb_dl_nbiot_check']
+        bad, n_pdcch, n_pdsch, n_ref = register_dynamic(model, info, dlch_mod, prim, nof_prb, name)
+        stats['bad'] += bad
+        if n_pdcch == 0 or n_pdsch == 0 or n_ref == 0:
+            print('  FAIL %s: dyn run exercised %d NPDCCH, %d NPDSCH, %d refusals' % (name, n_pdcch, n_pdsch, n_ref))
+            stats['bad'] += 1
+        if info.get('dyn_conflicts') != 0:
+            print('  FAIL %s: composer dropped %s planned transmissions' % (name, info.get('dyn_conflicts')))
+            stats['bad'] += 1
     shown = 0
     crs_model = {(l, k) for (l, k) in crs_positions(pci) if l >= 3}   # after the LTE control region
     for sfn in range(nframes):
@@ -412,13 +491,18 @@ def main():
         ('50prb/a14/pci251/sched10/hfn3', 50, 14, 251, 10, 3, 320, 0),
         ('100prb/a44/pci503/sched3/hfn2', 100, 44, 503, 3, 2, 320, 0),
         ('25prb/a2/pci0/sched8/hfn0', 25, 2, 0, 8, 0, 320, 0),
+        # NPDCCH / NPDSCH from the MAC's table; 480 frames = 4800 subframes take the table's ring around once
+        ('25prb/a17/pci1/sched4/hfn0/dyn', 25, 17, 1, 4, 0, 480, 0, 1),
+        ('25prb/a17/pci1/sched4/hfn0/dyn/junk', 25, 17, 1, 4, 0, 120, 1, 1),
+        ('50prb/a14/pci251/sched10/hfn3/dyn', 50, 14, 251, 10, 3, 200, 0, 1),
+        ('100prb/a44/pci503/sched3/hfn2/dyn', 100, 44, 503, 3, 2, 200, 0, 1),
     ]
     # Every v_shift, and ids on both sides of 5 and 6 (the old NPDSCH mapping special-cased ids <= 5): shorter runs
     for pci in (2, 3, 4, 5, 6, 11, 12, 13, 17, 100, 255, 256, 257, 502):
         cases.append(('25prb/a7/pci%d/sched%d' % (pci, pci % 12), 25, 7, pci, pci % 12, pci % 4, 96, 0))
     total_bad = 0
     total_re = 0
-    kinds = {HAS_NPSS: 0, HAS_NSSS: 0, HAS_NPBCH: 0, HAS_SIB1: 0, HAS_SI: 0}
+    kinds = {HAS_NPSS: 0, HAS_NSSS: 0, HAS_NPBCH: 0, HAS_SIB1: 0, HAS_SI: 0, HAS_NPDCCH: 0, HAS_NPDSCH: 0}
     for c in cases:
         st = run_case(dump, sync, sched_mod, *c)
         if st is None:
@@ -429,7 +513,8 @@ def main():
             kinds[k] += st['kinds'][k]
         print('%-34s %5d subframes, %7d REs, %d mismatches' % (c[0], st['sf'], st['re'], st['bad']))
 
-    names = {HAS_NPSS: 'NPSS', HAS_NSSS: 'NSSS', HAS_NPBCH: 'NPBCH', HAS_SIB1: 'SIB1-NB', HAS_SI: 'SI message'}
+    names = {HAS_NPSS: 'NPSS', HAS_NSSS: 'NSSS', HAS_NPBCH: 'NPBCH', HAS_SIB1: 'SIB1-NB', HAS_SI: 'SI message',
+             HAS_NPDCCH: 'NPDCCH', HAS_NPDSCH: 'NPDSCH'}
     print('subframes exercised: ' + ', '.join('%s %d' % (names[k], kinds[k]) for k in kinds))
     for k, n in kinds.items():
         if n == 0:

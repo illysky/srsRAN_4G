@@ -24,7 +24,7 @@
  * dumps the anchor PRB before and after, for enb_dl_nbiot_check.py to compare with a transmitter written from the
  * specification.
  *
- *   enb_dl_nbiot_dump out.bin nof_prb anchor_prb pci sched_info_sib1 hfn nframes junk
+ *   enb_dl_nbiot_dump out.bin nof_prb anchor_prb pci sched_info_sib1 hfn nframes junk [dyn]
  *
  * out.bin: per subframe (frames 0..nframes-1, subframes 0..9), two blocks of 14 symbols x 12 subcarriers of
  * complex float (cf_t, symbol-major): the LTE-only anchor PRB, then the anchor PRB after the composer.
@@ -37,6 +37,10 @@
  *   COLL <n>                            subframes in which LTE data was found in the anchor PRB
  *   OUTSIDE_DIFF <n>                    resource elements outside the anchor PRB data region that changed (must be 0)
  *
+ *   DYN NPDCCH <rnti> <23 bits> <search start t> <R> <ok>
+ *   DYN NPDSCH <rnti> <hex> <n_last> <k0> <n_sf> <n_rep> <ok>     with dyn != 0: what the MAC side put into the table
+ *                                       (absolute subframes), and whether the table took it (1) or refused it (0)
+ *
  * junk != 0 fills the anchor PRB data region with garbage before the composer runs, as an LTE PDSCH allocated on the
  * anchor PRB by mistake would; the result must be the same as without.
  */
@@ -48,6 +52,7 @@
 
 #include "srsran/phy/enb/enb_dl.h"
 #include "srsran/phy/enb/enb_dl_nbiot.h"
+#include "srsran/phy/phch/nbiot_dl_sched.h"
 #include "srsran/phy/utils/vector.h"
 
 static uint32_t lcg_state = 12345;
@@ -55,6 +60,71 @@ static uint8_t  lcg_byte(void)
 {
   lcg_state = lcg_state * 1664525u + 1013904223u;
   return (uint8_t)(lcg_state >> 24);
+}
+
+static uint32_t rnd(uint32_t n)
+{
+  lcg_state = lcg_state * 1664525u + 1013904223u;
+  return (lcg_state >> 8) % n;
+}
+
+static void print_bits(const uint8_t* b, uint32_t n)
+{
+  for (uint32_t i = 0; i < n; i++) {
+    putchar('0' + b[i]);
+  }
+}
+
+/// One NPDCCH + the NPDSCH it schedules, planned and stored the way the MAC will; a second attempt onto the same
+/// subframes (collide != 0) must be refused
+static void schedule_pair(srsran_nbiot_dl_sched_t*       sched,
+                          const srsran_nbiot_layout_t*   layout,
+                          const srsran_nbiot_dlch_t*     dlch,
+                          uint64_t                       t_now,
+                          uint64_t*                      prev_k0,
+                          uint32_t                       collide)
+{
+  static const uint32_t r_tab[4] = {1, 2, 4, 8};
+  const uint32_t        r        = r_tab[rnd(4)];
+  uint64_t              k0       = collide ? *prev_k0 : t_now + 30 + rnd(40);
+  *prev_k0                       = k0;
+
+  srsran_nbiot_dci_n1_t d = {.i_delay = rnd(4), .i_sf = rnd(4), .i_mcs = rnd(11), .i_rep = rnd(4), .ndi = 0,
+                             .harq_ack_res = 0, .dci_rep = 3};
+  uint8_t dci[SRSRAN_NBIOT_DCI_LEN];
+  srsran_nbiot_dci_n1_pack(&d, dci);
+  const uint16_t rnti = 1 + rnd(65000);
+
+  uint8_t e[SRSRAN_NBIOT_DL_SCHED_MAX_E];
+  srsran_nbiot_plan_t plan;
+  srsran_nbiot_plan_npdcch(layout, k0, r, &plan);
+  srsran_nbiot_npdcch_encode(dlch, dci, SRSRAN_NBIOT_DCI_LEN, rnti, e);
+  int ok = srsran_nbiot_dl_sched_add_npdcch(sched, e, srsran_nbiot_dlch_bits_per_sf(dlch), &plan, 0) == SRSRAN_SUCCESS;
+  printf("DYN NPDCCH %u ", rnti);
+  print_bits(dci, SRSRAN_NBIOT_DCI_LEN);
+  printf(" %llu %u %d\n", (unsigned long long)k0, r, ok);
+  if (!ok) {
+    return;
+  }
+
+  const uint32_t n_sf = srsran_nbiot_npdsch_n_sf(d.i_sf), n_rep = srsran_nbiot_npdsch_n_rep(d.i_rep);
+  const uint32_t k0d  = (uint32_t)srsran_nbiot_npdsch_k0(d.i_delay, 8);
+  const uint32_t tbs  = srsran_nbiot_npdsch_tbs(d.i_mcs, d.i_sf);
+  uint8_t        tb[400];
+  for (uint32_t i = 0; i < tbs / 8; i++) {
+    tb[i] = lcg_byte();
+  }
+  const uint64_t n_last = plan.t[r - 1];
+  srsran_nbiot_plan_t pd;
+  srsran_nbiot_plan_npdsch(layout, n_last, k0d, n_sf, n_rep, &pd);
+  srsran_nbiot_npdsch_encode(dlch, tb, tbs, n_sf, e);
+  ok = srsran_nbiot_dl_sched_add_npdsch(sched, e, n_sf * srsran_nbiot_dlch_bits_per_sf(dlch), rnti, n_sf, &pd, 0) ==
+       SRSRAN_SUCCESS;
+  printf("DYN NPDSCH %u ", rnti);
+  for (uint32_t i = 0; i < tbs / 8; i++) {
+    printf("%02x", tb[i]);
+  }
+  printf(" %llu %u %u %u %d\n", (unsigned long long)n_last, k0d, n_sf, n_rep, ok);
 }
 
 static void print_hex(const uint8_t* d, uint32_t n)
@@ -67,8 +137,8 @@ static void print_hex(const uint8_t* d, uint32_t n)
 
 int main(int argc, char** argv)
 {
-  if (argc != 9) {
-    fprintf(stderr, "usage: %s out.bin nof_prb anchor_prb pci sched_info_sib1 hfn nframes junk\n", argv[0]);
+  if (argc != 9 && argc != 10) {
+    fprintf(stderr, "usage: %s out.bin nof_prb anchor_prb pci sched_info_sib1 hfn nframes junk [dyn]\n", argv[0]);
     return 1;
   }
   const char*    out_file = argv[1];
@@ -79,6 +149,7 @@ int main(int argc, char** argv)
   const uint32_t hfn      = (uint32_t)atoi(argv[6]);
   const uint32_t nframes  = (uint32_t)atoi(argv[7]);
   const int      junk     = atoi(argv[8]);
+  const int      dyn      = argc == 10 ? atoi(argv[9]) : 0;
 
   srsran_cell_t lte;
   memset(&lte, 0, sizeof(lte));
@@ -154,6 +225,17 @@ int main(int argc, char** argv)
     printf("\n");
   }
 
+  srsran_nbiot_dl_sched_t* dlsched = NULL;
+  srsran_nbiot_layout_t    layout;
+  uint64_t                 prev_k0 = 0;
+  if (dyn) {
+    dlsched = srsran_nbiot_dl_sched_new();
+    srsran_enb_dl_nbiot_set_sched(&comp, dlsched);
+    if (srsran_enb_dl_nbiot_get_layout(&comp, &layout)) {
+      return 2;
+    }
+  }
+
   cf_t* out[SRSRAN_MAX_PORTS] = {NULL};
   out[0]                      = srsran_vec_cf_malloc(SRSRAN_SF_LEN_PRB(nof_prb));
   srsran_enb_dl_t enb;
@@ -175,6 +257,10 @@ int main(int argc, char** argv)
   uint32_t jstate       = 99;
   for (uint32_t sfn = 0; sfn < nframes; sfn++) {
     for (uint32_t sf = 0; sf < 10; sf++) {
+      if (dyn && sf == 0 && sfn % 3 == 1) {
+        // the MAC works a few subframes ahead of the composer; every third attempt tries to reuse subframes still taken
+        schedule_pair(dlsched, &layout, &comp.dlch, srsran_nbiot_abs_sf(hfn, sfn, 0), &prev_k0, (sfn / 3) % 3 == 2);
+      }
       srsran_dl_sf_cfg_t dl_sf;
       memset(&dl_sf, 0, sizeof(dl_sf));
       dl_sf.tti     = sfn * 10 + sf;
@@ -235,9 +321,11 @@ int main(int argc, char** argv)
   }
   fclose(fo);
   printf("COLL %llu\n", (unsigned long long)comp.lte_collisions);
+  printf("DYN_CONFLICTS %llu\n", (unsigned long long)comp.dyn_conflicts);
   printf("OUTSIDE_DIFF %llu\n", (unsigned long long)outside_diff);
 
   srsran_enb_dl_nbiot_free(&comp);
+  srsran_nbiot_dl_sched_free(dlsched);
   srsran_enb_dl_free(&enb);
   free(out[0]);
   free(before);

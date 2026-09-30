@@ -50,6 +50,8 @@
 #include "srsran/phy/ch_estimation/refsignal_dl_nbiot.h"
 #include "srsran/phy/common/phy_common.h"
 #include "srsran/phy/fec/softbuffer.h"
+#include "srsran/phy/phch/nbiot_dl_sched.h"
+#include "srsran/phy/phch/nbiot_dlch.h"
 #include "srsran/phy/phch/nbiot_sched.h"
 #include "srsran/phy/phch/npbch.h"
 #include "srsran/phy/phch/npdsch.h"
@@ -70,6 +72,8 @@
 #define SRSRAN_ENB_DL_NBIOT_HAS_NPBCH (1u << 3)
 #define SRSRAN_ENB_DL_NBIOT_HAS_SIB1 (1u << 4)
 #define SRSRAN_ENB_DL_NBIOT_HAS_SI (1u << 5)
+#define SRSRAN_ENB_DL_NBIOT_HAS_NPDCCH (1u << 6)
+#define SRSRAN_ENB_DL_NBIOT_HAS_NPDSCH (1u << 7)
 
 // CRS REs of one PRB after the LTE control region: ports 0/1 use symbols 4, 7, 11; ports 2/3 use symbol 8; two each
 #define SRSRAN_ENB_DL_NBIOT_MAX_CRS_RE (2 * (2 * 3 + 2 * 1))
@@ -96,6 +100,14 @@ typedef struct SRSRAN_API {
   srsran_npbch_t              npbch;
   srsran_npdsch_t             npdsch;
   srsran_softbuffer_tx_t      softbuffer;
+
+  // Addressed traffic (NPDCCH, NPDSCH with an RNTI): the MAC puts it into a table shared by all composers, which looks
+  // the subframe up. NULL: none.
+  srsran_nbiot_dlch_t      dlch;
+  srsran_nbiot_dl_sched_t* dl_sched;
+  srsran_nbiot_dl_tx_t     dyn; // scratch for the entry found
+  // Entries of the table that fell into a subframe the composer needed for something else, and were dropped
+  uint64_t dyn_conflicts;
 
   // LTE CRS REs inside the anchor PRB after the control region: grid index, and the LTE port that owns each
   uint32_t nof_crs_re;
@@ -125,6 +137,12 @@ SRSRAN_API int srsran_enb_dl_nbiot_set_si(srsran_enb_dl_nbiot_t*       q,
                                           const srsran_nbiot_si_params_t* p,
                                           const uint8_t*               payload,
                                           uint32_t                     bytes);
+
+/// Lets the composer send what the MAC has put into 'sched' (which must outlive it). Call before the first subframe.
+SRSRAN_API void srsran_enb_dl_nbiot_set_sched(srsran_enb_dl_nbiot_t* q, srsran_nbiot_dl_sched_t* sched);
+
+/// What the cell broadcasts where, for planning transmissions that must stay clear of it. Needs the MIB.
+SRSRAN_API int srsran_enb_dl_nbiot_get_layout(const srsran_enb_dl_nbiot_t* q, srsran_nbiot_layout_t* layout);
 
 /// Writes the NB-IoT anchor PRB of subframe sf_idx of radio frame sfn (hyperframe hfn) into sf_symbols, one grid per
 /// LTE port. The grids hold the LTE signal on entry. Returns a mask of SRSRAN_ENB_DL_NBIOT_HAS_*, or a negative error.

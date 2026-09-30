@@ -148,6 +148,11 @@ int srsran_enb_dl_nbiot_init(srsran_enb_dl_nbiot_t* q, const srsran_nbiot_cell_t
     goto error;
   }
 
+  if (srsran_nbiot_dlch_init(&q->dlch, &c, SRSRAN_ENB_DL_NBIOT_L_START)) {
+    fprintf(stderr, "enb_dl_nbiot: addressed channels init failed\n");
+    goto error;
+  }
+
   find_crs(q);
   return SRSRAN_SUCCESS;
 
@@ -165,7 +170,31 @@ void srsran_enb_dl_nbiot_free(srsran_enb_dl_nbiot_t* q)
   srsran_npbch_free(&q->npbch);
   srsran_npdsch_free(&q->npdsch);
   srsran_softbuffer_tx_free(&q->softbuffer);
+  srsran_nbiot_dlch_free(&q->dlch);
   bzero(q, sizeof(*q));
+}
+
+void srsran_enb_dl_nbiot_set_sched(srsran_enb_dl_nbiot_t* q, srsran_nbiot_dl_sched_t* sched)
+{
+  if (q) {
+    q->dl_sched = sched;
+  }
+}
+
+int srsran_enb_dl_nbiot_get_layout(const srsran_enb_dl_nbiot_t* q, srsran_nbiot_layout_t* layout)
+{
+  if (q == NULL || layout == NULL || !q->mib_set) {
+    return SRSRAN_ERROR_INVALID_INPUTS;
+  }
+  bzero(layout, sizeof(*layout));
+  layout->cell_id  = q->cell.n_id_ncell;
+  layout->mib      = q->mib;
+  layout->sib1_set = q->sib1_set;
+  for (uint32_t i = 0; i < SRSRAN_NBIOT_MAX_SI && i < SRSRAN_ENB_DL_NBIOT_MAX_SI; i++) {
+    layout->si_set[i] = q->si_set[i];
+    layout->si[i]     = q->si_params[i];
+  }
+  return SRSRAN_SUCCESS;
 }
 
 int srsran_enb_dl_nbiot_set_mib(srsran_enb_dl_nbiot_t* q, const srsran_mib_nb_t* mib)
@@ -372,6 +401,30 @@ int srsran_enb_dl_nbiot_put_sf(srsran_enb_dl_nbiot_t* q,
         ret |= SRSRAN_ENB_DL_NBIOT_HAS_SI;
         break; // SI windows of different messages do not overlap
       }
+    }
+  }
+
+  // 2b. Addressed traffic from the MAC. The planner keeps clear of NPSS, NSSS, NPBCH, SIB1-NB and SI subframes; if one of
+  // its entries landed on one anyway (the layout it planned with was not the one on the air) it is dropped and counted.
+  if (q->dl_sched && srsran_nbiot_dl_sched_get(q->dl_sched, srsran_nbiot_abs_sf(hfn, sfn, sf_idx), &q->dyn)) {
+    const uint32_t taken = ret & (SRSRAN_ENB_DL_NBIOT_HAS_NPSS | SRSRAN_ENB_DL_NBIOT_HAS_NSSS | SRSRAN_ENB_DL_NBIOT_HAS_NPBCH |
+                                  SRSRAN_ENB_DL_NBIOT_HAS_SIB1 | SRSRAN_ENB_DL_NBIOT_HAS_SI);
+    const uint32_t e_sf = srsran_nbiot_dlch_bits_per_sf(&q->dlch);
+    if (taken) {
+      q->dyn_conflicts++;
+    } else if (q->dyn.kind == SRSRAN_NBIOT_TX_NPDCCH) {
+      if (q->dyn.e_len != e_sf ||
+          srsran_nbiot_npdcch_put_sf(&q->dlch, q->dyn.e, q->dyn.reinit_sf, q->dyn.pos_in_group, nb_grid[0])) {
+        return SRSRAN_ERROR;
+      }
+      ret |= SRSRAN_ENB_DL_NBIOT_HAS_NPDCCH;
+    } else if (q->dyn.kind == SRSRAN_NBIOT_TX_NPDSCH) {
+      if (q->dyn.e_len != q->dyn.nof_sf * e_sf ||
+          srsran_nbiot_npdsch_put_sf(
+              &q->dlch, q->dyn.e, q->dyn.nof_sf, q->dyn.sf_in_cw, q->dyn.rnti, q->dyn.pass_sfn, q->dyn.pass_sf, nb_grid[0])) {
+        return SRSRAN_ERROR;
+      }
+      ret |= SRSRAN_ENB_DL_NBIOT_HAS_NPDSCH;
     }
   }
 
