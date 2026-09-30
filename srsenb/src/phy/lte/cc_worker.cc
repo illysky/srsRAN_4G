@@ -25,6 +25,7 @@
 #include "srsran/srsran.h"
 
 #include "srsenb/hdr/phy/lte/cc_worker.h"
+#include "srsenb/hdr/phy/lte/nbiot_dl.h"
 
 #define Error(fmt, ...)                                                                                                \
   if (SRSRAN_DEBUG_ENABLED)                                                                                            \
@@ -130,6 +131,17 @@ void cc_worker::init(phy_common* phy_, uint32_t cc_idx_)
   if (srsran_enb_ul_set_cell(&enb_ul, cell, &phy->dmrs_pusch_cfg, nullptr)) {
     ERROR("Error initiating ENB UL");
     return;
+  }
+
+  // NB-IoT in-band anchor on the first carrier
+  if (cc_idx == 0 && !phy->params.nbiot_config.empty()) {
+    std::string err;
+    nbiot = std::make_unique<nbiot_dl>();
+    if (!nbiot->init(phy->params.nbiot_config, cell, logger, err)) {
+      ERROR("NB-IoT (%s): %s", phy->params.nbiot_config.c_str(), err.c_str());
+      srsran::console("NB-IoT (%s): %s\n", phy->params.nbiot_config.c_str(), err.c_str());
+      exit(-1); // a half started cell that silently lacks the requested NB-IoT carrier would be worse than no cell
+    }
   }
 
   /* Setup SI-RNTI in PHY */
@@ -254,6 +266,13 @@ void cc_worker::work_dl(const srsran_dl_sf_cfg_t&            dl_sf_cfg,
 
   // Put pending PHICH HARQ ACK/NACK indications into subframe
   encode_phich(ul_grants.phich, ul_grants.nof_phich);
+
+  // NB-IoT anchor PRB: after the LTE channels (so the anchor is taken over as a whole), before the OFDM modulation
+  if (nbiot && dl_sf.sf_type == SRSRAN_SF_NORM) {
+    if (!nbiot->put_sf(hfn_tx, dl_sf.tti, enb_dl.sf_symbols)) {
+      Error("NB-IoT: no anchor in TTI %d", dl_sf.tti);
+    }
+  }
 
   // Generate signal and transmit
   srsran_enb_dl_gen_signal(&enb_dl);

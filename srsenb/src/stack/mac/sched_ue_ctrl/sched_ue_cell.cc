@@ -560,11 +560,17 @@ bool find_optimal_rbgmask(const sched_ue_cell&       ue_cell,
     int      upper_tbs  = std::get<3>(ret);
     if (upper_tbs >= (int)req_bytes.stop()) {
       tb      = tb_table[upper_nrbg - 1];
-      int pos = 0;
+      // Keep the highest "upper_nrbg" available RBGs, i.e. drop the lowest ones. The available RBGs are not a range:
+      // RBGs that are reserved (PBCH/SSS, the NB-IoT anchor) or already allocated can be anywhere in the mask, so it
+      // must not be rebuilt as "everything from some position up" -- that would take in unavailable RBGs, make the
+      // allocation collide, and fail for this UE in every TTI.
+      int last_dropped = -1;
       for (uint32_t n_rbgs = newtxmask.count(); n_rbgs > upper_nrbg; --n_rbgs) {
-        pos = newtxmask.find_lowest(pos + 1, newtxmask.size());
+        last_dropped = newtxmask.find_lowest(last_dropped + 1, newtxmask.size());
       }
-      newtxmask.from_uint64(~((1U << (uint64_t)pos) - 1U) & ((1U << newtxmask.size()) - 1U));
+      if (last_dropped >= 0) {
+        newtxmask.fill(0, last_dropped + 1, false);
+      }
     }
     return true;
   }

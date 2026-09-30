@@ -123,6 +123,13 @@ void sf_worker::set_context(const srsran::phy_common_interface::worker_context_t
   }
 }
 
+void sf_worker::set_hyper_frame(uint32_t hfn)
+{
+  for (auto& w : cc_workers) {
+    w->set_hyper_frame(hfn);
+  }
+}
+
 int sf_worker::add_rnti(uint16_t rnti, uint32_t cc_idx)
 {
   int ret = SRSRAN_ERROR;

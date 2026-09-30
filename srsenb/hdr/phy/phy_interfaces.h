@@ -78,6 +78,7 @@ struct phy_args_t {
   srsran::channel::args_t dl_channel_args;
   srsran::channel::args_t ul_channel_args;
   cfr_args_t              cfr_args;
+  std::string             nbiot_config; ///< NB-IoT in-band carrier description (enb_nbiot.conf); empty = no NB-IoT
 };
 
 struct phy_cfg_t {

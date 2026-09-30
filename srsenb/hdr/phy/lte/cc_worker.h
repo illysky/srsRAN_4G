@@ -25,12 +25,15 @@
 #include <string.h>
 
 #include "../phy_common.h"
+#include <memory>
 #include "srsran/srslog/srslog.h"
 
 #define LOG_EXECTIME
 
 namespace srsenb {
 namespace lte {
+
+class nbiot_dl; // in-band NB-IoT anchor, see nbiot_dl.h
 
 class cc_worker
 {
@@ -43,6 +46,8 @@ public:
   cf_t* get_buffer_rx(uint32_t antenna_idx);
   cf_t* get_buffer_tx(uint32_t antenna_idx);
   void  set_tti(uint32_t tti);
+  /// Hyper frame number (0..1023) of the subframe about to be transmitted; only NB-IoT looks at it
+  void set_hyper_frame(uint32_t hfn) { hfn_tx = hfn; }
 
   int      add_rnti(uint16_t rnti);
   void     rem_rnti(uint16_t rnti);
@@ -94,6 +99,10 @@ private:
   srsran_ul_sf_cfg_t ul_sf = {};
 
   srsran_softbuffer_tx_t temp_mbsfn_softbuffer = {};
+
+  // In-band NB-IoT anchor, present when expert.nbiot_config is set (first carrier only)
+  std::unique_ptr<nbiot_dl> nbiot;
+  uint32_t                  hfn_tx = 0;
 
   // Class to store user information
   class ue

@@ -96,6 +96,7 @@ struct rrc_cfg_t {
   rrc_endc_cfg_t endc_cfg;
   bool           etws_present = false;
   bool           cmas_present = false;
+  int            nbiot_anchor_prb = -1; ///< in-band NB-IoT anchor PRB of the first cell, -1 if none
 };
 
 constexpr uint32_t UE_PCELL_CC_IDX = 0;

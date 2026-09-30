@@ -447,6 +447,12 @@ enable = false
 #rrc_inactivity_timer = 30000
 #max_mac_dl_kos       = 100
 #max_mac_ul_kos       = 100
+#
+# nbiot_config:      Transmit an in-band NB-IoT anchor carrier (NPSS/NSSS/NRS/NPBCH/SIB1-NB/SIB2-NB) inside this LTE cell.
+#                    Path to a libconfig carrier description (see lib/examples/test/nbiot_inband.conf). Its LTE host
+#                    (n_prb, pci, nof_ports, dl_earfcn) must equal the cell configured here, otherwise srsenb refuses to
+#                    start. The scheduler keeps LTE traffic off the anchor PRB in both directions. Empty disables NB-IoT.
+#nbiot_config         =
 #max_prach_offset_us  = 30
 #nof_prealloc_ues     = 8
 #rlf_release_timer_ms = 4000

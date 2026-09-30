@@ -100,3 +100,18 @@ add_lte_test(enb_phy_test_tm1_ca_cs_ho enb_phy_test --duration=1000 --nof_enb_ce
 
 # 6 Carrier eNb shall end in error without breaking the PHY
 add_lte_test(enb_phy_test_exceed_nof_carriers enb_phy_test --duration=${ENB_PHY_TEST_DURATION} --nof_enb_cells=6 --ue_cell_list=1,5 --ack_mode=cs --cell.nof_prb=6 --tm=4)
+
+# NB-IoT in-band anchor of a running srsenb, read back from the ZMQ radio and compared with a model written from the
+# specification. Needs python3 with pyzmq and numpy (skipped otherwise) and the NB-IoT tools (libconfig++).
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND AND TARGET srsenb AND TARGET nbiot_sib_pack)
+  set(NBIOT_TEST_DIRS ${CMAKE_SOURCE_DIR}/lib/src/phy/enb/test
+                      ${CMAKE_SOURCE_DIR}/lib/src/phy/phch/test
+                      ${CMAKE_SOURCE_DIR}/lib/src/phy/sync/test)
+  add_test(NAME srsenb_nbiot_dl_zmq
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/nbiot_dl_zmq_check.py
+                   $<TARGET_FILE:srsenb> ${CMAKE_SOURCE_DIR}/srsenb
+                   ${CMAKE_SOURCE_DIR}/lib/examples/test/nbiot_inband.conf
+                   $<TARGET_FILE:nbiot_sib_pack> 14 ${NBIOT_TEST_DIRS})
+  set_tests_properties(srsenb_nbiot_dl_zmq PROPERTIES LABELS "srsenb;phy" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 120)
+endif()

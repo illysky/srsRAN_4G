@@ -164,6 +164,10 @@ public:
     uint32_t nrb_cqi;
     uint32_t ncs_an;
 
+    // In-band NB-IoT anchor PRB, or -1. LTE never gets this PRB, in either direction: the NB-IoT downlink overwrites it
+    // and the NB-IoT uplink (NPRACH, NPUSCH) is received on it.
+    int nbiot_anchor_prb = -1;
+
     uint32_t srs_subframe_config;
     uint32_t srs_subframe_offset;
     uint32_t srs_bw_config;

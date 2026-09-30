@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/enb.h"
+#include "srsenb/hdr/phy/lte/nbiot_dl.h"
 #include "srsenb/hdr/stack/enb_stack_lte.h"
 #include "srsenb/hdr/x2_adapter.h"
 #include "srsenb/src/enb_cfg_parser.h"
@@ -56,6 +57,36 @@ int enb::init(const all_args_t& args_)
   if (parse_args(args_, rrc_cfg, rrc_nr_cfg)) {
     srsran::console("Error processing arguments.\n");
     return SRSRAN_ERROR;
+  }
+
+  // NB-IoT: fail before anything starts if the carrier description cannot be used, and tell the scheduler which PRB
+  // to keep clear for it
+  if (not args.phy.nbiot_config.empty()) {
+    nbiot::cell_config nb_cfg;
+    std::string        nb_err;
+    srsran_cell_t      host = rrc_cfg.cell;
+    if (not rrc_cfg.cell_list.empty()) {
+      host.id = rrc_cfg.cell_list[0].pci; // the PCI is per cell, rrc_cfg.cell only holds what the cells share
+    }
+    if (rrc_cfg.cell_list.empty() or not srsenb::lte::nbiot_dl::load(args.phy.nbiot_config, nb_cfg, nb_err) or
+        not srsenb::lte::nbiot_dl::check_host(nb_cfg, host, nb_err)) {
+      srsran::console("NB-IoT (%s): %s\n",
+                      args.phy.nbiot_config.c_str(),
+                      rrc_cfg.cell_list.empty() ? "no LTE cell to host it" : nb_err.c_str());
+      return SRSRAN_ERROR;
+    }
+    if (nb_cfg.lte_dl_earfcn != rrc_cfg.cell_list[0].dl_earfcn) {
+      srsran::console("NB-IoT (%s): nbiot.lte.dl_earfcn=%u but the eNB cell uses %u\n",
+                      args.phy.nbiot_config.c_str(),
+                      nb_cfg.lte_dl_earfcn,
+                      rrc_cfg.cell_list[0].dl_earfcn);
+      return SRSRAN_ERROR;
+    }
+    rrc_cfg.nbiot_anchor_prb = (int)nb_cfg.nbiot_prb;
+    srsran::console("NB-IoT in-band anchor on PRB %u (DL EARFCN %u, UL EARFCN %u)\n",
+                    nb_cfg.nbiot_prb,
+                    nb_cfg.lte_dl_earfcn,
+                    nb_cfg.ul_earfcn);
   }
 
   srsran::byte_buffer_pool::get_instance()->enable_logger(true);

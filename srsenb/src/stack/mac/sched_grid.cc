@@ -114,6 +114,14 @@ void sf_grid_t::new_tti(tti_point tti_rx_)
   // Reserve PRBs for PUCCH
   ul_mask |= pucch_mask;
 
+  // Reserve the in-band NB-IoT anchor PRB. The DL allocation unit is the RBG, so the RBG that holds the anchor goes
+  // with it (for 25 PRB and PRB 17 that costs PRB 16 as well).
+  if (cc_cfg->cfg.nbiot_anchor_prb >= 0 and (uint32_t)cc_cfg->cfg.nbiot_anchor_prb < cc_cfg->nof_prb()) {
+    const uint32_t anchor = (uint32_t)cc_cfg->cfg.nbiot_anchor_prb;
+    dl_mask.fill(anchor / cc_cfg->P, anchor / cc_cfg->P + 1);
+    ul_mask.fill(anchor, anchor + 1);
+  }
+
   // Reserve PRBs for PRACH
   if (srsran_prach_in_window_config_fdd(cc_cfg->cfg.prach_config, to_tx_ul(tti_rx).to_uint(), -1)) {
     prbmask_t prach_mask{cc_cfg->nof_prb()};
@@ -422,6 +430,15 @@ alloc_result sf_sched::alloc_rar(uint32_t aggr_lvl, const pending_rar_t& rar, rb
 
   uint32_t buf_rar           = 7 * nof_grants + 1; // 1+6 bytes per RAR subheader+body and 1 byte for Backoff
   uint32_t total_ul_nof_prbs = msg3_nof_prbs * nof_grants;
+
+  // Msg3 grants are packed from the first PRB after PUCCH/PRACH. They must not run over the NB-IoT anchor PRB, which
+  // is reserved in the UL (and would make the later Msg3 allocation fail): start right after it instead.
+  if (cc_cfg->cfg.nbiot_anchor_prb >= 0) {
+    const uint32_t anchor = (uint32_t)cc_cfg->cfg.nbiot_anchor_prb;
+    if (last_msg3_prb <= anchor and anchor < last_msg3_prb + total_ul_nof_prbs) {
+      last_msg3_prb = anchor + 1;
+    }
+  }
 
   // check if there is enough space for Msg3
   if (last_msg3_prb + total_ul_nof_prbs > max_msg3_prb) {

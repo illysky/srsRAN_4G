@@ -136,9 +136,15 @@ void txrx::run_thread()
   // Set TTI so that first TX is at tti=0
   tti = TTI_SUB(0, FDD_HARQ_DELAY_UL_MS + 1);
 
+  // Transmitted subframes so far; the first one is TTI 0 of hyper frame 0. NB-IoT signals the hyper-SFN, so the
+  // workers need to know which hyper frame the subframe they build belongs to.
+  uint64_t tx_count = 0;
+
   // Main loop
   while (running) {
     tti = TTI_ADD(tti, 1);
+    const uint32_t hfn_tx = (uint32_t)((tx_count / (SRSRAN_NOF_SF_X_FRAME * 1024UL)) % 1024UL);
+    tx_count++;
     logger.set_context(tti);
 
     lte::sf_worker* lte_worker = nullptr;
@@ -230,6 +236,7 @@ void txrx::run_thread()
       context.tx_time.copy(timestamp);
 
       lte_worker->set_context(context);
+      lte_worker->set_hyper_frame(hfn_tx);
 
       // Start LTE worker processing
       worker_com->semaphore.push(lte_worker);
