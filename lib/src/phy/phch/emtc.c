@@ -203,3 +203,143 @@ uint64_t srsran_emtc_bcast_prbs(const srsran_emtc_bcast_cfg_t* cfg, uint32_t sfn
   }
   return mask;
 }
+
+uint32_t srsran_emtc_bcast_nbs(const srsran_emtc_bcast_cfg_t* cfg, uint32_t sfn, uint32_t sf)
+{
+  uint32_t nbs = 0;
+  uint32_t nb  = 0;
+  uint32_t rv  = 0;
+  if (srsran_emtc_sib1_br(cfg, sfn, sf, &nb, &rv)) {
+    nbs |= 1U << nb;
+  }
+  int si = srsran_emtc_si(cfg, sfn, sf, &rv);
+  if (si >= 0) {
+    nbs |= 1U << cfg->si[si].nb;
+  }
+  return nbs;
+}
+
+uint32_t srsran_emtc_nb_bits(uint32_t nof_prb)
+{
+  uint32_t n = srsran_emtc_nof_nb(nof_prb);
+  uint32_t b = 0;
+  while ((1U << b) < n) {
+    b++;
+  }
+  return b;
+}
+
+uint32_t srsran_emtc_riv(uint32_t start, uint32_t len)
+{
+  const uint32_t N = 6;
+  if (len == 0 || start + len > N) {
+    return 0;
+  }
+  if (len - 1 <= N / 2) {
+    return N * (len - 1) + start;
+  }
+  return N * (N - len + 1) + (N - 1 - start);
+}
+
+static void put_bits(uint8_t** p, uint32_t value, uint32_t nof_bits)
+{
+  for (uint32_t i = 0; i < nof_bits; i++) {
+    *(*p)++ = (uint8_t)((value >> (nof_bits - 1 - i)) & 1U);
+  }
+}
+
+static uint32_t size_6_0a(uint32_t nof_prb)
+{
+  // flag, hopping, RBA, MCS, repetition, HARQ, NDI, RV, TPC, CSI request, SRS request, DCI subframe repetition
+  return 1 + 1 + srsran_emtc_nb_bits(nof_prb) + 5 + 4 + 2 + 3 + 1 + 2 + 2 + 1 + 1 + 2;
+}
+
+static uint32_t size_6_1a(uint32_t nof_prb, bool srs)
+{
+  // flag, hopping, RBA, MCS, repetition, HARQ, NDI, RV, TPC, [SRS request], HARQ-ACK offset, DCI subframe repetition
+  return 1 + 1 + srsran_emtc_nb_bits(nof_prb) + 5 + 4 + 2 + 3 + 1 + 2 + 2 + (srs ? 1 : 0) + 2 + 2;
+}
+
+uint32_t srsran_emtc_dci_size(uint32_t nof_prb, bool srs_6_1a)
+{
+  uint32_t a = size_6_0a(nof_prb);
+  uint32_t b = size_6_1a(nof_prb, srs_6_1a);
+  return a > b ? a : b;
+}
+
+uint32_t srsran_emtc_dci_6_1a_pack(uint32_t nof_prb, bool srs_6_1a, const srsran_emtc_dci_t* dci, uint8_t* bits)
+{
+  uint8_t* p = bits;
+  put_bits(&p, 1, 1);
+  put_bits(&p, dci->hopping ? 1 : 0, 1);
+  put_bits(&p, dci->nb, srsran_emtc_nb_bits(nof_prb));
+  put_bits(&p, dci->riv, 5);
+  put_bits(&p, dci->mcs, 4);
+  put_bits(&p, dci->rep, 2);
+  put_bits(&p, dci->harq_pid, 3);
+  put_bits(&p, dci->ndi ? 1 : 0, 1);
+  put_bits(&p, dci->rv, 2);
+  put_bits(&p, dci->tpc, 2);
+  if (srs_6_1a) {
+    put_bits(&p, dci->srs_request ? 1 : 0, 1);
+  }
+  put_bits(&p, dci->harq_ack_offset, 2);
+  put_bits(&p, dci->dci_rep, 2);
+  uint32_t size = srsran_emtc_dci_size(nof_prb, srs_6_1a);
+  while ((uint32_t)(p - bits) < size) {
+    *p++ = 0;
+  }
+  return size;
+}
+
+uint32_t srsran_emtc_dci_6_0a_pack(uint32_t nof_prb, bool srs_6_1a, const srsran_emtc_dci_t* dci, uint8_t* bits)
+{
+  uint8_t* p = bits;
+  put_bits(&p, 0, 1);
+  put_bits(&p, dci->hopping ? 1 : 0, 1);
+  put_bits(&p, dci->nb, srsran_emtc_nb_bits(nof_prb));
+  put_bits(&p, dci->riv, 5);
+  put_bits(&p, dci->mcs, 4);
+  put_bits(&p, dci->rep, 2);
+  put_bits(&p, dci->harq_pid, 3);
+  put_bits(&p, dci->ndi ? 1 : 0, 1);
+  put_bits(&p, dci->rv, 2);
+  put_bits(&p, dci->tpc, 2);
+  put_bits(&p, dci->csi_request ? 1 : 0, 1);
+  put_bits(&p, dci->srs_request ? 1 : 0, 1);
+  put_bits(&p, dci->dci_rep, 2);
+  uint32_t size = srsran_emtc_dci_size(nof_prb, srs_6_1a);
+  while ((uint32_t)(p - bits) < size) {
+    *p++ = 0;
+  }
+  return size;
+}
+
+uint32_t srsran_emtc_rar_grant_ce_a(uint32_t nof_prb_ul,
+                                    uint32_t msg3_nb,
+                                    uint32_t riv4,
+                                    uint32_t rep,
+                                    uint32_t mcs,
+                                    uint32_t tpc,
+                                    bool     csi,
+                                    bool     ul_delay,
+                                    uint32_t mpdcch_nb)
+{
+  uint32_t nb_bits = srsran_emtc_nb_bits(nof_prb_ul);
+  uint32_t g       = 0;
+  g                = (g << nb_bits) | (msg3_nb & ((1U << nb_bits) - 1));
+  g                = (g << 4) | (riv4 & 0xf);
+  g                = (g << 2) | (rep & 3);
+  g                = (g << 3) | (mcs & 7);
+  g                = (g << 3) | (tpc & 7);
+  g                = (g << 1) | (csi ? 1 : 0);
+  g                = (g << 1) | (ul_delay ? 1 : 0);
+  g                = (g << 2) | (mpdcch_nb & 3);
+  g                = g << (4 - nb_bits);
+  return g;
+}
+
+uint16_t srsran_emtc_ra_rnti(uint32_t prach_sfn, uint32_t prach_sf, uint32_t f_id)
+{
+  return (uint16_t)(1 + prach_sf + 10 * f_id + 60 * (prach_sfn % 40));
+}

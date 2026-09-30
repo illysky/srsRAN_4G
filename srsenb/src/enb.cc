@@ -103,7 +103,8 @@ int enb::init(const all_args_t& args_)
     }
     args.phy.emtc_bcast = bc;
     args.phy.emtc_cfg   = ecfg;
-    rrc_cfg.emtc_dl_prbs = [bc](uint32_t tti) { return srsran_emtc_bcast_prbs(&bc->sched, (tti / 10) % 1024, tti % 10); };
+    rrc_cfg.emtc_cfg     = ecfg;
+    rrc_cfg.emtc_bcast   = bc;
     srsran::console("LTE-M: SIB1-BR %zu bytes (TBS %u, %u repetitions), SIB2-BR %zu bytes (TBS %u, narrowband %u)\n",
                     bc->sib1_len,
                     srsran_emtc_sib1_br_tbs(bc->sched.sched_info_sib1_br),

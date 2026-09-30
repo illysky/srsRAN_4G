@@ -21,6 +21,7 @@
 
 #include "srsenb/hdr/phy/prach_worker.h"
 #include "srsran/interfaces/enb_mac_interfaces.h"
+#include "srsran/common/standard_streams.h"
 #include "srsran/srsran.h"
 
 namespace srsenb {
@@ -155,6 +156,9 @@ int prach_worker::run_tti(sf_buffer* b)
       return SRSRAN_ERROR;
     }
 
+    if (getenv("PRACH_DEBUG")) {
+      fprintf(stderr, "PRACH_WORKER: tti=%d nof_det=%d\n", b->tti, prach_nof_det);
+    }
     if (prach_nof_det) {
       for (uint32_t i = 0; i < prach_nof_det; i++) {
         logger.info("PRACH: cc=%d, %d/%d, preamble=%d, offset=%.1f us, peak2avg=%.1f, max_offset=%.1f us",
@@ -165,6 +169,11 @@ int prach_worker::run_tti(sf_buffer* b)
                     prach_offsets[i] * 1e6,
                     prach_p2avg[i],
                     max_prach_offset_us);
+        srsran::console("PRACH: tti=%d preamble=%d offset=%.1f us peak2avg=%.1f\n",
+                        b->tti,
+                        prach_indices[i],
+                        prach_offsets[i] * 1e6,
+                        prach_p2avg[i]);
 
         if (prach_offsets[i] * 1e6 < max_prach_offset_us) {
           // Convert time offset to Time Alignment command

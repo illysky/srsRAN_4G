@@ -143,7 +143,7 @@ int mac::rlc_buffer_state(uint16_t rnti, uint32_t lc_id, uint32_t tx_queue, uint
   if (check_ue_active(rnti)) {
     if (rnti != SRSRAN_MRNTI) {
       srsran::rwlock_read_guard lock(rwlock);
-      ret = scheduler.dl_rlc_buffer_state(rnti, lc_id, tx_queue, retx_queue);
+      ret = sched_of(rnti).dl_rlc_buffer_state(rnti, lc_id, tx_queue, retx_queue);
     } else {
       task_sched.defer_callback(0, [this, tx_queue, lc_id]() {
         srsran::rwlock_read_guard lock(rwlock);
@@ -162,18 +162,20 @@ int mac::rlc_buffer_state(uint16_t rnti, uint32_t lc_id, uint32_t tx_queue, uint
 int mac::bearer_ue_cfg(uint16_t rnti, uint32_t lc_id, mac_lc_ch_cfg_t* cfg)
 {
   srsran::rwlock_read_guard lock(rwlock);
-  return check_ue_active(rnti) ? scheduler.bearer_ue_cfg(rnti, lc_id, *cfg) : -1;
+  return check_ue_active(rnti) ? sched_of(rnti).bearer_ue_cfg(rnti, lc_id, *cfg) : -1;
 }
 
 int mac::bearer_ue_rem(uint16_t rnti, uint32_t lc_id)
 {
   srsran::rwlock_read_guard lock(rwlock);
-  return check_ue_active(rnti) ? scheduler.bearer_ue_rem(rnti, lc_id) : -1;
+  return check_ue_active(rnti) ? sched_of(rnti).bearer_ue_rem(rnti, lc_id) : -1;
 }
 
 void mac::phy_config_enabled(uint16_t rnti, bool enabled)
 {
-  scheduler.phy_config_enabled(rnti, enabled);
+  if (not emtc_sched.has_rnti(rnti)) {
+    scheduler.phy_config_enabled(rnti, enabled);
+  }
 }
 
 // Update UE configuration
@@ -190,7 +192,7 @@ int mac::ue_cfg(uint16_t rnti, const sched_interface::ue_cfg_t* cfg)
 
   // Update Scheduler configuration
   if (cfg) {
-    if (scheduler.ue_cfg(rnti, *cfg) == SRSRAN_ERROR) {
+    if (sched_of(rnti).ue_cfg(rnti, *cfg) == SRSRAN_ERROR) {
       logger.error("Registering UE rnti=0x%x to SCHED", rnti);
       return SRSRAN_ERROR;
     }
@@ -213,7 +215,7 @@ int mac::ue_rem(uint16_t rnti)
       return SRSRAN_ERROR;
     }
   }
-  scheduler.ue_rem(rnti);
+  sched_of(rnti).ue_rem(rnti);
 
   // Remove UE from the perspective of L1
   // Note: Let any pending retx ACK to arrive, so that PHY recognizes rnti
@@ -232,7 +234,7 @@ int mac::ue_set_crnti(uint16_t temp_crnti, uint16_t crnti, const sched_interface
   srsran::rwlock_read_guard lock(rwlock);
   if (temp_crnti == crnti) {
     // Schedule ConRes Msg4
-    scheduler.dl_mac_buffer_state(crnti, (uint32_t)srsran::dl_sch_lcid::CON_RES_ID);
+    sched_of(crnti).dl_mac_buffer_state(crnti, (uint32_t)srsran::dl_sch_lcid::CON_RES_ID, 1);
   }
   return ue_cfg(crnti, &cfg);
 }
@@ -241,6 +243,11 @@ int mac::cell_cfg(const std::vector<sched_interface::cell_cfg_t>& cell_cfg_)
 {
   srsran::rwlock_write_guard lock(rwlock);
   cell_config = cell_cfg_;
+  if (not cell_config.empty() and cell_config[0].emtc_cfg and cell_config[0].emtc_bcast) {
+    emtc_sched.set_cell(cell_config[0].emtc_cfg, cell_config[0].emtc_bcast, cell_config[0]);
+    cell_config[0].emtc_dl_prbs = [this](uint32_t tti) { return emtc_sched.dl_prbs(tti); };
+    cell_config[0].emtc_ul_prbs = [this](uint32_t tti) { return emtc_sched.ul_prbs(tti); };
+  }
   return scheduler.cell_cfg(cell_config);
 }
 
@@ -249,7 +256,7 @@ void mac::get_metrics(mac_metrics_t& metrics)
   srsran::rwlock_read_guard lock(rwlock);
   metrics.ues.reserve(ue_db.size());
   for (auto& u : ue_db) {
-    if (not scheduler.ue_exists(u.first)) {
+    if (emtc_sched.has_rnti(u.first) or not scheduler.ue_exists(u.first)) {
       continue;
     }
     metrics.ues.emplace_back();
@@ -297,7 +304,7 @@ int mac::ack_info(uint32_t tti_rx, uint16_t rnti, uint32_t enb_cc_idx, uint32_t 
     return SRSRAN_ERROR;
   }
 
-  int nof_bytes = scheduler.dl_ack_info(tti_rx, rnti, enb_cc_idx, tb_idx, ack);
+  int nof_bytes = sched_of(rnti).dl_ack_info(tti_rx, rnti, enb_cc_idx, tb_idx, ack);
   ue_db[rnti]->metrics_tx(ack, nof_bytes);
 
   rrc_h->set_radiolink_dl_state(rnti, ack);
@@ -320,7 +327,7 @@ int mac::crc_info(uint32_t tti_rx, uint16_t rnti, uint32_t enb_cc_idx, uint32_t 
   rrc_h->set_radiolink_ul_state(rnti, crc);
 
   // Scheduler uses eNB's CC mapping
-  return scheduler.ul_crc_info(tti_rx, rnti, enb_cc_idx, crc);
+  return sched_of(rnti).ul_crc_info(tti_rx, rnti, enb_cc_idx, crc);
 }
 
 int mac::push_pdu(uint32_t tti_rx,
@@ -375,7 +382,7 @@ int mac::ri_info(uint32_t tti, uint16_t rnti, uint32_t enb_cc_idx, uint32_t ri_v
     return SRSRAN_ERROR;
   }
 
-  scheduler.dl_ri_info(tti, rnti, enb_cc_idx, ri_value);
+  sched_of(rnti).dl_ri_info(tti, rnti, enb_cc_idx, ri_value);
   ue_db[rnti]->metrics_dl_ri(ri_value);
 
   return SRSRAN_SUCCESS;
@@ -390,7 +397,7 @@ int mac::pmi_info(uint32_t tti, uint16_t rnti, uint32_t enb_cc_idx, uint32_t pmi
     return SRSRAN_ERROR;
   }
 
-  scheduler.dl_pmi_info(tti, rnti, enb_cc_idx, pmi_value);
+  sched_of(rnti).dl_pmi_info(tti, rnti, enb_cc_idx, pmi_value);
   ue_db[rnti]->metrics_dl_pmi(pmi_value);
 
   return SRSRAN_SUCCESS;
@@ -405,7 +412,7 @@ int mac::cqi_info(uint32_t tti, uint16_t rnti, uint32_t enb_cc_idx, uint32_t cqi
     return SRSRAN_ERROR;
   }
 
-  scheduler.dl_cqi_info(tti, rnti, enb_cc_idx, cqi_value);
+  sched_of(rnti).dl_cqi_info(tti, rnti, enb_cc_idx, cqi_value);
   ue_db[rnti]->metrics_dl_cqi(cqi_value);
 
   return SRSRAN_SUCCESS;
@@ -420,7 +427,7 @@ int mac::sb_cqi_info(uint32_t tti, uint16_t rnti, uint32_t enb_cc_idx, uint32_t 
     return SRSRAN_ERROR;
   }
 
-  scheduler.dl_sb_cqi_info(tti, rnti, enb_cc_idx, sb_idx, cqi_value);
+  sched_of(rnti).dl_sb_cqi_info(tti, rnti, enb_cc_idx, sb_idx, cqi_value);
   return SRSRAN_SUCCESS;
 }
 
@@ -435,7 +442,7 @@ int mac::snr_info(uint32_t tti_rx, uint16_t rnti, uint32_t enb_cc_idx, float snr
 
   rrc_h->set_radiolink_ul_state(rnti, snr >= args.rlf_min_ul_snr_estim);
 
-  return scheduler.ul_snr_info(tti_rx, rnti, enb_cc_idx, snr, (uint32_t)ch);
+  return sched_of(rnti).ul_snr_info(tti_rx, rnti, enb_cc_idx, snr, (uint32_t)ch);
 }
 
 int mac::ta_info(uint32_t tti, uint16_t rnti, float ta_us)
@@ -448,7 +455,7 @@ int mac::ta_info(uint32_t tti, uint16_t rnti, float ta_us)
 
   uint32_t nof_ta_count = ue_db[rnti]->set_ta_us(ta_us);
   if (nof_ta_count > 0) {
-    return scheduler.dl_mac_buffer_state(rnti, (uint32_t)srsran::dl_sch_lcid::TA_CMD, nof_ta_count);
+    return sched_of(rnti).dl_mac_buffer_state(rnti, (uint32_t)srsran::dl_sch_lcid::TA_CMD, nof_ta_count);
   }
   return SRSRAN_SUCCESS;
 }
@@ -462,7 +469,7 @@ int mac::sr_detected(uint32_t tti, uint16_t rnti)
     return SRSRAN_ERROR;
   }
 
-  return scheduler.ul_sr_info(tti, rnti);
+  return sched_of(rnti).ul_sr_info(tti, rnti);
 }
 
 bool mac::is_valid_rnti_unprotected(uint16_t rnti)
@@ -478,7 +485,7 @@ bool mac::is_valid_rnti_unprotected(uint16_t rnti)
   return true;
 }
 
-uint16_t mac::allocate_ue(uint32_t enb_cc_idx)
+uint16_t mac::allocate_ue(uint32_t enb_cc_idx, bool emtc)
 {
   ue*      inserted_ue = nullptr;
   uint16_t rnti        = SRSRAN_INVALID_RNTI;
@@ -500,8 +507,9 @@ uint16_t mac::allocate_ue(uint32_t enb_cc_idx)
     }
 
     // Allocate and initialize UE object
-    unique_rnti_ptr<ue> ue_ptr = make_rnti_obj<ue>(
-        rnti, rnti, enb_cc_idx, &scheduler, rrc_h, rlc_h, phy_h, logger, cells.size(), softbuffer_pool.get());
+    sched_interface*    ue_sched = emtc ? static_cast<sched_interface*>(&emtc_sched) : &scheduler;
+    unique_rnti_ptr<ue> ue_ptr   = make_rnti_obj<ue>(
+        rnti, rnti, enb_cc_idx, ue_sched, rrc_h, rlc_h, phy_h, logger, cells.size(), softbuffer_pool.get());
 
     // Add UE to rnti map
     srsran::rwlock_write_guard rw_lock(rwlock);
@@ -515,6 +523,10 @@ uint16_t mac::allocate_ue(uint32_t enb_cc_idx)
       logger.info("Failed to allocate rnti=0x%x. Attempting a different rnti.", rnti);
     }
   } while (inserted_ue == nullptr);
+
+  if (emtc) {
+    emtc_sched.add_rnti(rnti);
+  }
 
   // Set PCAP if available
   if (pcap != nullptr) {
@@ -567,8 +579,12 @@ void mac::rach_detected(uint32_t tti, uint32_t enb_cc_idx, uint32_t preamble_idx
     uint16_t rnti = 0;
     // check if this is a PRACH from a PDCCH order
     bool is_po_prach = is_pending_pdcch_order_prach(preamble_idx, rnti);
+    bool is_br       = enb_cc_idx == 0 and emtc_sched.is_br_preamble(preamble_idx);
+    if (is_br) {
+      is_po_prach = false;
+    }
     if (!is_po_prach) {
-      rnti = allocate_ue(enb_cc_idx);
+      rnti = allocate_ue(enb_cc_idx, is_br);
       if (rnti == SRSRAN_INVALID_RNTI) {
         return;
       }
@@ -607,7 +623,7 @@ void mac::rach_detected(uint32_t tti, uint32_t enb_cc_idx, uint32_t preamble_idx
     }
 
     // Trigger scheduler RACH
-    if (scheduler.dl_rach_info(enb_cc_idx, rar_info) != SRSRAN_SUCCESS) {
+    if (sched_of(rnti).dl_rach_info(enb_cc_idx, rar_info) != SRSRAN_SUCCESS) {
       ue_rem(rnti);
       return;
     }
@@ -816,6 +832,28 @@ int mac::get_dl_sched(uint32_t tti_tx_dl, dl_sched_list_t& dl_sched_res_list)
 
     // Number of CCH symbols
     dl_sched_res->cfi = sched_result.cfi;
+
+    // LTE-M narrowbands (first cell)
+    dl_sched_res->nof_emtc_mpdcch = 0;
+    dl_sched_res->nof_emtc_pdsch  = 0;
+    if (enb_cc_idx == 0 and emtc_sched.enabled()) {
+      std::vector<sched_emtc::ue_pdsch> ue_pdus;
+      emtc_sched.get_dl(tti_tx_dl, *dl_sched_res, ue_pdus);
+      for (auto& p : ue_pdus) {
+        auto& phy_pdsch = dl_sched_res->emtc_pdsch[p.idx];
+        if (not ue_db.contains(p.rnti)) {
+          phy_pdsch.data = nullptr;
+          continue;
+        }
+        phy_pdsch.softbuffer = ue_db[p.rnti]->get_tx_softbuffer(enb_cc_idx, p.pid, 0);
+        phy_pdsch.data       = p.pdu.empty() ? phy_pdsch.data
+                                             : ue_db[p.rnti]->generate_pdu(
+                                             enb_cc_idx, p.pid, 0, p.pdu.data(), p.pdu.size(), p.tbs_bytes);
+        if (pcap and phy_pdsch.data) {
+          pcap->write_dl_crnti(phy_pdsch.data, p.tbs_bytes, p.rnti, true, tti_tx_dl, enb_cc_idx);
+        }
+      }
+    }
   }
 
   // Count number of TTIs for all active users
@@ -1052,6 +1090,42 @@ int mac::get_ul_sched(uint32_t tti_tx_ul, ul_sched_list_t& ul_sched_res_list)
         }
       } else {
         logger.warning("Grant %d for rnti=0x%x has zero TBS", i, sched_result.pusch[i].dci.rnti);
+      }
+    }
+
+    // LTE-M PUSCHs (first cell): granted on MPDCCH or in the RAR, no PDCCH/PHICH
+    if (enb_cc_idx == 0 and emtc_sched.enabled()) {
+      std::vector<sched_emtc::ul_grant> grants;
+      emtc_sched.get_ul(tti_tx_ul, grants);
+      for (const auto& g : grants) {
+        if (getenv("EMTC_DEBUG")) {
+          fprintf(stderr, "EMTC_UL: planned tti=%d rnti=0x%x known=%d n=%d\n", tti_tx_ul, g.rnti, (int)ue_db.contains(g.rnti), n);
+        }
+        if (n >= (int)MAX_GRANTS or not ue_db.contains(g.rnti)) {
+          continue;
+        }
+        auto& p         = phy_ul_sched_res->pusch[n];
+        p               = {};
+        p.current_tx_nb = g.current_tx_nb;
+        p.pid           = g.pid;
+        p.needs_pdcch   = false;
+        p.dci           = g.dci;
+        p.softbuffer_rx = ue_db[g.rnti]->get_rx_softbuffer(enb_cc_idx, tti_tx_ul);
+        if (p.softbuffer_rx == nullptr) {
+          continue;
+        }
+        if (g.current_tx_nb == 0) {
+          srsran_softbuffer_rx_reset_tbs(p.softbuffer_rx, g.tbs_bytes * 8);
+        }
+        p.data = ue_db[g.rnti]->request_buffer(tti_tx_ul, enb_cc_idx, g.tbs_bytes);
+        if (getenv("EMTC_DEBUG")) {
+          fprintf(stderr, "EMTC_UL: grant tti=%d rnti=0x%x riv=%d mcs=%d tbs=%dB data=%p\n", tti_tx_ul, g.rnti,
+                  g.dci.type2_alloc.riv, g.dci.tb.mcs_idx, g.tbs_bytes, (void*)p.data);
+        }
+        if (p.data) {
+          phy_ul_sched_res->nof_grants++;
+          n++;
+        }
       }
     }
 

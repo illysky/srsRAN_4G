@@ -975,6 +975,12 @@ bool srsran_pucch_cfg_isvalid(srsran_pucch_cfg_t* cfg, uint32_t nof_prb)
 uint32_t srsran_pucch_n_prb(const srsran_cell_t* cell, const srsran_pucch_cfg_t* cfg, uint32_t ns)
 {
   uint32_t m = srsran_pucch_m(cfg, cell->cp);
+  if (cfg->bl_ce) {
+    if (cfg->bl_ce_j_odd) {
+      m = (m % 2 == 0) ? m + 1 : m - 1;
+    }
+    return (m % 2 == 0) ? m / 2 : cell->nof_prb - 1 - m / 2;
+  }
   // Determine n_prb
   uint32_t n_prb = m / 2;
   if ((m + ns) % 2) {

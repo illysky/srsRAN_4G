@@ -76,12 +76,21 @@ struct config {
   uint32_t mpdcch_rep_paging = 1;
   uint32_t pdsch_max_rep     = 16; ///< pdsch-maxNumRepetitionCEmodeA
   uint32_t pusch_max_rep     = 8;  ///< pusch-maxNumRepetitionCEmodeA
+  uint32_t ul_hop_interval   = 1;  ///< interval-ULHoppingConfigCommonModeA (FDD: 1, 2, 4, 8 subframes)
+
+  // Msg3 (eNB side, sent in the RAR grant): UL narrowband, PRBs within it, MCS 0..7
+  uint32_t msg3_nb        = 2;
+  uint32_t msg3_rb_start  = 0;
+  uint32_t msg3_nof_rb    = 3;
+  uint32_t msg3_mcs       = 1;
+  bool     dci_srs_6_1a   = true; ///< DCI 6-1A carries the 1-bit SRS request (TS 36.212 V14.2 5.3.3.1.12)
 };
 
 /// What the DL composer transmits: the packed messages and when/where they go
 struct bcast {
   srsran_emtc_bcast_cfg_t           sched      = {};
   uint32_t                          start_symbol = 3;
+  uint32_t                          ul_hop_interval = 1; ///< N_NB^ch,UL of CE mode A
   std::vector<uint8_t>              sib1;       ///< BCCH-DL-SCH-BR SIB1-BR, zero padded to its TBS
   std::vector<std::vector<uint8_t>> si;         ///< BCCH-DL-SCH-BR SystemInformation-BR, zero padded to each si-TBS
   size_t                            sib1_len = 0; ///< unpadded bytes

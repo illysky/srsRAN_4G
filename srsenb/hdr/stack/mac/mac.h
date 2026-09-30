@@ -25,6 +25,7 @@
 #include "sched.h"
 #include "sched_interface.h"
 #include "srsenb/hdr/common/rnti_pool.h"
+#include "srsenb/hdr/stack/mac/sched_emtc.h"
 #include "srsenb/hdr/stack/mac/schedulers/sched_time_rr.h"
 #include "srsran/adt/circular_map.h"
 #include "srsran/adt/pool/batch_mem_pool.h"
@@ -127,7 +128,7 @@ private:
                 unsigned                    cc_idx);
 
   bool     check_ue_active(uint16_t rnti);
-  uint16_t allocate_ue(uint32_t enb_cc_idx);
+  uint16_t allocate_ue(uint32_t enb_cc_idx, bool emtc = false);
   bool     is_valid_rnti_unprotected(uint16_t rnti);
 
   /* helper function for PDCCH orders */
@@ -162,6 +163,14 @@ private:
 
   /* Scheduler unit */
   sched                                    scheduler;
+  sched_emtc                               emtc_sched; ///< BL/CE UEs (LTE-M) of the first cell
+
+  /// The scheduler that owns rnti (LTE-M or LTE)
+  sched_interface& sched_of(uint16_t rnti)
+  {
+    return emtc_sched.enabled() && emtc_sched.has_rnti(rnti) ? static_cast<sched_interface&>(emtc_sched)
+                                                               : static_cast<sched_interface&>(scheduler);
+  }
   std::vector<sched_interface::cell_cfg_t> cell_config;
 
   sched_interface::dl_pdu_mch_t mch = {};

@@ -24,12 +24,18 @@
 #include "srsran/common/common.h"
 #include "srsran/srsran.h"
 #include <functional>
+#include <memory>
 #include <vector>
 
 #ifndef SRSRAN_SCHED_INTERFACE_H
 #define SRSRAN_SCHED_INTERFACE_H
 
 namespace srsenb {
+
+namespace emtc {
+struct config;
+struct bcast;
+} // namespace emtc
 
 class sched_interface
 {
@@ -169,7 +175,10 @@ public:
     // and the NB-IoT uplink (NPRACH, NPUSCH) is received on it.
     int nbiot_anchor_prb = -1;
 
-    // LTE-M: PRBs (bit n = PRB n) that LTE-M takes in the DL subframe / UL subframe with this TTI. LTE never gets them.
+    // LTE-M (first cell): its configuration, and the PRBs (bit n = PRB n) that it takes in the DL subframe / UL
+    // subframe with this TTI, which LTE never gets (installed by the MAC)
+    std::shared_ptr<const emtc::config>          emtc_cfg;
+    std::shared_ptr<const emtc::bcast>           emtc_bcast;
     std::function<uint64_t(uint32_t tti_tx_dl)> emtc_dl_prbs;
     std::function<uint64_t(uint32_t tti_tx_ul)> emtc_ul_prbs;
 

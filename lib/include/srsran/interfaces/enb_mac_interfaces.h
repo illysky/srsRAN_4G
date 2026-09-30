@@ -55,10 +55,42 @@ public:
   /**
    * DL Scheduling result per cell/carrier
    */
+  /// LTE-M: MPDCCH format 5 (the whole narrowband) carrying one DCI 6-x
+  struct emtc_mpdcch_t {
+    uint16_t rnti;
+    uint32_t nb;
+    bool     common; ///< Type1/Type2 common search space (scrambled with the PCI)
+    uint32_t n_id;   ///< n_ID^MPDCCH otherwise
+    uint32_t nof_bits;
+    uint8_t  dci[64];
+  };
+
+  /// LTE-M: PDSCH within a narrowband, starting at startSymbolBR
+  struct emtc_pdsch_t {
+    uint16_t                rnti;
+    uint32_t                nb;
+    uint32_t                rb_start; ///< within the narrowband
+    uint32_t                nof_rb;
+    uint32_t                tbs; ///< bits
+    srsran_mod_t            mod;
+    uint32_t                rv;
+    uint8_t*                data;
+    srsran_softbuffer_tx_t* softbuffer;
+    bool                    harq_ack; ///< HARQ-ACK expected on PUCCH format 1a four subframes later
+    uint32_t                n_pucch;  ///< n^(1)_PUCCH of that HARQ-ACK
+    uint32_t                pid;
+  };
+
+  static const uint32_t EMTC_MAX_GRANTS = 4;
+
   typedef struct {
     dl_sched_grant_t pdsch[MAX_GRANTS]; //< DL Grants
     uint32_t         nof_grants;        //< Number of DL grants
     uint32_t         cfi;               //< Current CFI of the cell, it can vary across cells
+    emtc_mpdcch_t    emtc_mpdcch[EMTC_MAX_GRANTS];
+    uint32_t         nof_emtc_mpdcch;
+    emtc_pdsch_t     emtc_pdsch[EMTC_MAX_GRANTS];
+    uint32_t         nof_emtc_pdsch;
   } dl_sched_t;
 
   /**

@@ -21,6 +21,8 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "srsran/phy/common/phy_common.h"
@@ -923,6 +925,23 @@ int srsran_prach_process(srsran_prach_t* p,
             max_idx  = k;
           }
         }
+      }
+    }
+    {
+      static int dbg = -1;
+      if (dbg < 0) {
+        dbg = getenv("PRACH_DEBUG") ? atoi(getenv("PRACH_DEBUG")) : 0;
+      }
+      if (dbg == 1 && i == p->num_ra_preambles - 1) {
+        fprintf(stderr, "PRACH_E: root %d avg %.3e p2a %.1f\n", i, corr_ave, max_peak / corr_ave);
+      } else if (dbg > 1 && max_peak > dbg * corr_ave) {
+        uint32_t best = 0;
+        for (int j = 1; j < n_wins; j++) {
+          if (p->peak_values[j] > p->peak_values[best]) {
+            best = j;
+          }
+        }
+        fprintf(stderr, "PRACH_DEBUG: root %d win %d preamble %d p2a %.1f df %.1f nind %d ind %p\n", i, best, i * n_wins + best, max_peak / corr_ave, p->detect_factor, *n_indices, (void*)indices);
       }
     }
     if (max_peak > (p->detect_factor * corr_ave)) {

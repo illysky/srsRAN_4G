@@ -773,8 +773,8 @@ void rrc::config_mac()
     item.prach_freq_offset    = cfg.sibs[1].sib2().rr_cfg_common.prach_cfg.prach_cfg_info.prach_freq_offset;
     item.nbiot_anchor_prb     = (ccidx == 0) ? cfg.nbiot_anchor_prb : -1;
     if (ccidx == 0) {
-      item.emtc_dl_prbs = cfg.emtc_dl_prbs;
-      item.emtc_ul_prbs = cfg.emtc_ul_prbs;
+      item.emtc_cfg   = cfg.emtc_cfg;
+      item.emtc_bcast = cfg.emtc_bcast;
     }
     item.maxharq_msg3tx       = cfg.sibs[1].sib2().rr_cfg_common.rach_cfg_common.max_harq_msg3_tx;
     item.enable_64qam         = cfg.sibs[1].sib2().rr_cfg_common.pusch_cfg_common.pusch_cfg_basic.enable64_qam;

@@ -99,4 +99,56 @@ SRSRAN_API int srsran_emtc_si(const srsran_emtc_bcast_cfg_t* cfg, uint32_t sfn, 
 /// PRBs of the LTE carrier (bit n = PRB n) that SIB1-BR and the BR SI messages take in (sfn, sf)
 SRSRAN_API uint64_t srsran_emtc_bcast_prbs(const srsran_emtc_bcast_cfg_t* cfg, uint32_t sfn, uint32_t sf);
 
+/// Narrowband that carries (a repetition of) a BR broadcast in (sfn, sf), as a bitmask of narrowbands
+SRSRAN_API uint32_t srsran_emtc_bcast_nbs(const srsran_emtc_bcast_cfg_t* cfg, uint32_t sfn, uint32_t sf);
+
+/// Bits of a narrowband index: ceil(log2(floor(N_RB / 6)))
+SRSRAN_API uint32_t srsran_emtc_nb_bits(uint32_t nof_prb);
+
+/// Resource indication value of L contiguous PRBs starting at PRB s of a narrowband (N = 6, TS 36.213 7.1.6.3 / 8.1.1)
+SRSRAN_API uint32_t srsran_emtc_riv(uint32_t start, uint32_t len);
+
+/// Fields of DCI format 6-0A / 6-1A (TS 36.212 5.3.3.1.10, 5.3.3.1.12) for FDD, CE mode A, TM1/TM2
+typedef struct SRSRAN_API {
+  bool     hopping;
+  uint32_t nb;              ///< narrowband index
+  uint32_t riv;             ///< 5-bit allocation within the narrowband (DL type 2, UL type 0)
+  uint32_t mcs;             ///< 4 bits
+  uint32_t rep;             ///< PDSCH/PUSCH repetition number, 2 bits
+  uint32_t harq_pid;        ///< 3 bits
+  bool     ndi;
+  uint32_t rv;              ///< 2 bits
+  uint32_t tpc;             ///< 2 bits (6-1A with RA-RNTI: LSB selects N_PRB^1A = 3 when set)
+  uint32_t harq_ack_offset; ///< 6-1A, 2 bits
+  bool     csi_request;     ///< 6-0A
+  bool     srs_request;
+  uint32_t dci_rep;         ///< DCI subframe repetition number, 2 bits
+} srsran_emtc_dci_t;
+
+/// Payload size of 6-0A/6-1A on the same search space (the smaller one is zero padded to the larger).
+/// srs_6_1a: whether 6-1A carries the 1-bit SRS request.
+SRSRAN_API uint32_t srsran_emtc_dci_size(uint32_t nof_prb, bool srs_6_1a);
+
+/// Packs DCI 6-1A (unpacked bits, MSB first) padded to srsran_emtc_dci_size(); returns the size
+SRSRAN_API uint32_t srsran_emtc_dci_6_1a_pack(uint32_t nof_prb, bool srs_6_1a, const srsran_emtc_dci_t* dci, uint8_t* bits);
+
+/// Packs DCI 6-0A (unpacked bits, MSB first) padded to srsran_emtc_dci_size(); returns the size
+SRSRAN_API uint32_t srsran_emtc_dci_6_0a_pack(uint32_t nof_prb, bool srs_6_1a, const srsran_emtc_dci_t* dci, uint8_t* bits);
+
+/// 20-bit CE mode A random access response grant (TS 36.213 6.2, Table 6-2). riv4 is the 4-bit UL type 0 allocation
+/// within the Msg3 narrowband (a leading 0 is implied); rep is the 2-bit Msg3 repetition code (00 = pusch-max/8),
+/// mcs the 3-bit truncated MCS, tpc the 3-bit TPC (3 = 0 dB), mpdcch_nb the 2-bit Msg3/4 MPDCCH narrowband offset.
+SRSRAN_API uint32_t srsran_emtc_rar_grant_ce_a(uint32_t nof_prb_ul,
+                                               uint32_t msg3_nb,
+                                               uint32_t riv4,
+                                               uint32_t rep,
+                                               uint32_t mcs,
+                                               uint32_t tpc,
+                                               bool     csi,
+                                               bool     ul_delay,
+                                               uint32_t mpdcch_nb);
+
+/// BR RA-RNTI = 1 + t_id + 10 f_id + 60 (SFN_id mod (Wmax / 10)), Wmax = 400 (TS 36.321 5.1.4)
+SRSRAN_API uint16_t srsran_emtc_ra_rnti(uint32_t prach_sfn, uint32_t prach_sf, uint32_t f_id);
+
 #endif // SRSRAN_EMTC_H

@@ -117,6 +117,7 @@ private:
     }
 
     srsran_phich_grant_t phich_grant = {};
+    bool                 bl_ce       = false; ///< LTE-M UE: PUCCH on one PRB per subframe (TS 36.211 5.4.3)
 
     void     metrics_read(phy_metrics_t* metrics);
     void     metrics_dl(uint32_t mcs);

@@ -281,7 +281,25 @@ void cc_worker::work_dl(const srsran_dl_sf_cfg_t&            dl_sf_cfg,
 
   // LTE-M narrowbands: after the LTE channels, whose scheduler left them free
   if (emtc && dl_sf.sf_type == SRSRAN_SF_NORM) {
-    emtc->put_sf(dl_sf.tti, enb_dl.sf_symbols);
+    emtc->put_sf(dl_sf.tti, dl_grants, enb_dl.sf_symbols);
+    // HARQ-ACK of the LTE-M PDSCHs: PUCCH format 1a with n_PUCCH carried in place of the CCCE index
+    for (uint32_t i = 0; i < dl_grants.nof_emtc_pdsch && i < mac_interface_phy_lte::EMTC_MAX_GRANTS; i++) {
+      const auto& p = dl_grants.emtc_pdsch[i];
+      if (!p.harq_ack || ue_db.count(p.rnti) == 0) {
+        continue;
+      }
+      ue_db[p.rnti]->bl_ce  = true;
+      srsran_dci_dl_t dci   = {};
+      dci.rnti              = p.rnti;
+      dci.format            = SRSRAN_DCI_FORMAT1A;
+      dci.location.ncce     = p.n_pucch;
+      dci.pid               = p.pid;
+      dci.tb[0].mcs_idx     = 0;
+      dci.tb[0].rv          = (int)p.rv;
+      dci.tb[1].mcs_idx     = 0;
+      dci.tb[1].rv          = 1; // disabled
+      phy->ue_db.set_ack_pending(tti_tx_ul, cc_idx, dci);
+    }
   }
 
   // NB-IoT anchor PRB: after the LTE channels (so the anchor is taken over as a whole), before the OFDM modulation
@@ -432,6 +450,11 @@ void cc_worker::decode_pusch(stack_interface_phy_lte::ul_sched_grant_t* grants, 
       return;
     }
 
+    if (getenv("EMTC_DEBUG") && !ul_grant.needs_pdcch) {
+      fprintf(stderr, "EMTC_RX: PUSCH tti=%d rnti=0x%x prb=%d+%d tbs=%d crc=%d snr=%.1f ta=%.1fus\n", tti_rx, rnti,
+              ul_cfg.pusch.grant.n_prb[0], ul_cfg.pusch.grant.L_prb, ul_cfg.pusch.grant.tb.tbs, pusch_res.crc,
+              enb_ul.chest_res.snr_db, enb_ul.chest_res.ta_us);
+    }
     // Notify MAC new received data and HARQ Indication value
     if (ul_grant.data != nullptr) {
       // Inform MAC about the CRC result
@@ -463,6 +486,13 @@ int cc_worker::decode_pucch()
       if (phy->ue_db.get_ul_config(rnti, cc_idx, ul_cfg) < SRSRAN_SUCCESS) {
         Error("Error retrieving last UL configuration for RNTI %x, CC %d", rnti, cc_idx);
         continue;
+      }
+
+      if (iter.second->bl_ce) {
+        const uint32_t hop           = emtc ? emtc->ul_hop_interval() : 1;
+        ul_cfg.pucch.bl_ce           = true;
+        ul_cfg.pucch.bl_ce_j_odd     = ((tti_rx / hop) % 2) == 1;
+        ul_cfg.pucch.N_pucch_1       = 0; // n_PUCCH is set in full as the CCE index
       }
 
       // Check if user needs to receive PUCCH

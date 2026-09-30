@@ -24,13 +24,18 @@
 
 #include "rrc_config_common.h"
 #include "srsran/asn1/rrc.h"
-#include <functional>
+#include <memory>
 #include "srsran/common/security.h"
 #include "srsran/interfaces/enb_rrc_interface_types.h"
 #include "srsran/phy/common/phy_common.h"
 #include <array>
 
 namespace srsenb {
+
+namespace emtc {
+struct config;
+struct bcast;
+} // namespace emtc
 
 struct rrc_cfg_sr_t {
   uint32_t                                                   period;
@@ -99,8 +104,8 @@ struct rrc_cfg_t {
   bool           cmas_present = false;
   int            nbiot_anchor_prb = -1; ///< in-band NB-IoT anchor PRB of the first cell, -1 if none
   uint32_t       nbiot_inactivity_ms = 10000; ///< NB-IoT RRC_CONNECTED UEs are released after this much silence
-  std::function<uint64_t(uint32_t)> emtc_dl_prbs; ///< PRBs LTE-M takes in a DL TTI of the first cell (none if empty)
-  std::function<uint64_t(uint32_t)> emtc_ul_prbs; ///< PRBs LTE-M takes in an UL TTI of the first cell
+  std::shared_ptr<const emtc::config> emtc_cfg;   ///< LTE-M on the first cell (none if empty)
+  std::shared_ptr<const emtc::bcast>  emtc_bcast; ///< its SIB1-BR/SI-BR
 };
 
 constexpr uint32_t UE_PCELL_CC_IDX = 0;

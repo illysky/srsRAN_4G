@@ -80,6 +80,10 @@ typedef struct SRSRAN_API {
   bool  meas_ta_en;
   bool  use_cedron_alg;
 
+  // BL/CE UE (TS 36.211 5.4.3): the same PRB in both slots, m' = m +/- 1 when j = floor(i / N_NB^ch,UL) is odd
+  bool bl_ce;
+  bool bl_ce_j_odd;
+
   // PUCCH configuration generated during a call to encode/decode
   srsran_pucch_format_t format;
   uint16_t              n_pucch;

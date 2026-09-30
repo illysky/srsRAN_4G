@@ -148,7 +148,13 @@ bool load(const std::string& path, config& o, std::string& err)
             get(c, "emtc.paging.narrowband", o.paging_nb, err) &&
             get(c, "emtc.paging.mpdcch_repetitions", o.mpdcch_rep_paging, err) &&
             get(c, "emtc.pdsch_max_repetitions", o.pdsch_max_rep, err) &&
-            get(c, "emtc.pusch_max_repetitions", o.pusch_max_rep, err);
+            get(c, "emtc.pusch_max_repetitions", o.pusch_max_rep, err) &&
+            get(c, "emtc.ul_hopping_interval", o.ul_hop_interval, err) &&
+            get(c, "emtc.msg3.narrowband", o.msg3_nb, err) && get(c, "emtc.msg3.rb_start", o.msg3_rb_start, err) &&
+            get(c, "emtc.msg3.nof_rb", o.msg3_nof_rb, err) && get(c, "emtc.msg3.mcs", o.msg3_mcs, err);
+  if (ok && c.exists("emtc.dci_srs_6_1a")) {
+    c.lookupValue("emtc.dci_srs_6_1a", o.dci_srs_6_1a);
+  }
   if (!ok) {
     return false;
   }
@@ -188,6 +194,11 @@ bool load(const std::string& path, config& o, std::string& err)
   }
   if (o.first_preamble > o.last_preamble || o.last_preamble > 63) {
     err = "emtc.rach: first_preamble..last_preamble must be a range within 0..63";
+    return false;
+  }
+  if (o.msg3_nof_rb == 0 || o.msg3_rb_start + o.msg3_nof_rb > 6 || srsran_emtc_riv(o.msg3_rb_start, o.msg3_nof_rb) > 15 ||
+      o.msg3_mcs > 7) {
+    err = "emtc.msg3: rb_start/nof_rb must fit the narrowband with a RIV below 16 (RAR grant), mcs 0..7";
     return false;
   }
   return true;
@@ -257,6 +268,7 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
     out.sched.si[i] = {cfg.si[i].periodicity_rf, cfg.si[i].nb, cfg.si[i].tbs};
   }
   out.start_symbol = cfg.start_symbol;
+  out.ul_hop_interval = cfg.ul_hop_interval;
 
   // ---- SIB1-BR: the cell's SIB1, its SI list replaced by the BR one, and bandwidthReducedAccessRelatedInfo
   sib_type1_s s = rrc_cfg.sib1;
@@ -347,6 +359,17 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
     return false;
   }
 
+  // PUCCH/PUSCH narrowband hopping interval of CE mode A (N_NB^ch,UL, TS 36.211 5.4.3)
+  rr.freq_hop_params_r13.set_present();
+  rr.freq_hop_params_r13->interv_ul_hop_cfg_common_mode_a_r13_present = true;
+  rr.freq_hop_params_r13->interv_ul_hop_cfg_common_mode_a_r13.set_interv_fdd_r13();
+  if (!set_enum(rr.freq_hop_params_r13->interv_ul_hop_cfg_common_mode_a_r13.interv_fdd_r13(),
+                cfg.ul_hop_interval,
+                "emtc.ul_hopping_interval",
+                err)) {
+    return false;
+  }
+
   rr.pdsch_cfg_common_v1310.set_present();
   rr.pdsch_cfg_common_v1310->pdsch_max_num_repeat_cemode_a_r13_present = true;
   if (!set_enum(rr.pdsch_cfg_common_v1310->pdsch_max_num_repeat_cemode_a_r13, cfg.pdsch_max_rep, "emtc.pdsch_max_repetitions", err)) {
@@ -383,6 +406,7 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
   pp.prach_hop_cfg_r13 = prach_params_ce_r13_s::prach_hop_cfg_r13_opts::off;
 
   rr.pucch_cfg_common_v1310.set_present();
+  rr.pucch_cfg_common_v1310->n1_pucch_an_info_list_r13_present = true;
   rr.pucch_cfg_common_v1310->n1_pucch_an_info_list_r13.resize(1);
   rr.pucch_cfg_common_v1310->n1_pucch_an_info_list_r13[0]        = (uint16_t)cfg.n1_pucch_an;
   rr.pucch_cfg_common_v1310->pucch_num_repeat_ce_msg4_level0_r13_present = true;
