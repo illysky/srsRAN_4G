@@ -62,6 +62,7 @@ struct nbiot_ra_config {
   uint32_t offset_eighths = 0; ///< npdcch-Offset-RA: 0, 1, 2, 3 eighths
   uint32_t window_pp      = 0; ///< ra-ResponseWindowSize in search-space periods
   uint32_t contention_pp  = 0; ///< mac-ContentionResolutionTimer in search-space periods
+  uint32_t ack_rep_msg4   = 1; ///< ack-NACK-NumRepetitions-Msg4
 
   // NPRACH occasions, which NPUSCH of connected UEs stays clear of
   uint32_t nprach_period_ms = 0;
@@ -219,6 +220,9 @@ private:
     uint32_t             dl_retx_count = 0;
     std::vector<uint8_t> dl_pdu;
     uint32_t             dl_tbs = 0, dl_i_sf = 0, dl_i_tbs = 0;
+    bool                 msg4          = false; ///< dl_pdu is Msg4, not acknowledged yet: Type-2 CSS, TC-RNTI
+    uint64_t             msg4_deadline = 0;     ///< last subframe a Msg4 (re)transmission may start in
+    bool                 gone          = false; ///< dropped: removed at the next tick
   };
   std::map<uint16_t, ue_ctx> ues;
 
@@ -246,7 +250,9 @@ private:
 
   bool schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log);
   /// DCI N1 and NPDSCH of ue.dl_pdu, and the receiver for its HARQ-ACK; caller holds the lock
-  bool send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std::vector<std::string>& log);
+  bool send_dl(ue_ctx& ue, uint64_t t_min, uint64_t t_max, const std::string& what, std::vector<std::string>& log);
+  /// A UE whose Msg4 was never acknowledged: dropped at the next tick
+  void drop_msg4(ue_ctx& ue, const char* why, std::vector<std::string>& log);
   /// The HARQ-ACK decoder's verdict on the last downlink of ue (detected false: nothing came)
   void dl_feedback(ue_ctx& ue, bool detected, bool ack, std::vector<std::string>& log);
   bool schedule_ul(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log);
@@ -295,6 +301,7 @@ private:
     uint64_t        expiry  = 0; ///< absolute subframe
     uint64_t        last_po = 0; ///< last paging occasion planned for it
     uint32_t        sent    = 0;
+    uint64_t        skip_until = 0; ///< test: occasions up to here are not sent
   };
   std::vector<page_entry> pages;
 

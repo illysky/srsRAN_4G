@@ -26,6 +26,7 @@
 #include "srsran/asn1/rrc_nbiot.h"
 #include "srsran/common/standard_streams.h"
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace srsenb {
@@ -104,6 +105,23 @@ uint32_t type1_dci_rep(uint32_t r_max)
     i++;
   }
   return i;
+}
+
+// Test: a file PAGING_TEST_FILE saying "miss1" makes the eNB withhold the first paging time window of the next eDRX
+// page, as if the UE had missed it; it is consumed by that page
+constexpr const char* PAGING_TEST_FILE = "/tmp/enb-nbiot/paging_test";
+
+bool paging_test_miss()
+{
+  FILE* f = fopen(PAGING_TEST_FILE, "r");
+  if (f == nullptr) {
+    return false;
+  }
+  char buf[16] = {};
+  const bool miss = fgets(buf, sizeof(buf), f) != nullptr && strncmp(buf, "miss1", 5) == 0;
+  fclose(f);
+  remove(PAGING_TEST_FILE);
+  return miss;
 }
 
 uint64_t next_po(const nbiot_ra_config& c, uint32_t ue_id, const nbiot_paging_id& id, uint64_t t, uint64_t* end = nullptr)
@@ -200,7 +218,18 @@ void nbiot_mac::page(uint32_t ue_id, const nbiot_paging_id& id)
   const uint64_t expiry = std::max(now + (uint64_t)PAGING_CYCLES * cfg.paging_t_rf * 10 + PAGING_PLAN_SF, end + 1);
   for (page_entry& e : pages) {
     if (same_id(e.id, id)) {
-      e.expiry = std::max(e.expiry, expiry);
+      // In eDRX the MME repeats the page once per eDRX cycle: each repetition adds the UE's next paging time window
+      uint64_t more = expiry;
+      if (id.edrx_hf > 0) {
+        uint64_t end2 = 0;
+        if (next_po(cfg, ue_id, id, e.expiry + 1, &end2) != UINT64_MAX) {
+          more = std::max(more, end2 + 1);
+        }
+        srsran::console("NB-IoT: paging %s again: until the window that ends at %llu\n",
+                        id_str(id).c_str(),
+                        (unsigned long long)more);
+      }
+      e.expiry = std::max(e.expiry, more);
       e.ue_id  = ue_id;
       e.id     = id;
       return;
@@ -210,6 +239,10 @@ void nbiot_mac::page(uint32_t ue_id, const nbiot_paging_id& id)
   e.ue_id  = ue_id;
   e.id     = id;
   e.expiry = expiry;
+  const bool miss = id.edrx_hf > 0 && paging_test_miss();
+  if (miss) {
+    e.skip_until = end;
+  }
   pages.push_back(e);
   if (id.edrx_hf > 0) {
     srsran::console("NB-IoT: paging %s, UE_ID %u, eDRX %u hyperframes, window %u frames: first occasion at H-SFN %llu "
@@ -222,6 +255,9 @@ void nbiot_mac::page(uint32_t ue_id, const nbiot_paging_id& id)
                     (unsigned long long)(po / 10) % 1024,
                     (po - now) / 1000.0,
                     (unsigned long long)end);
+    if (miss) {
+      srsran::console("NB-IoT: paging test: the first window of this page is withheld\n");
+    }
   } else {
     srsran::console("NB-IoT: paging %s, UE_ID %u, first occasion at %llu (now %llu)\n",
                     id_str(id).c_str(),
@@ -273,10 +309,15 @@ void nbiot_mac::schedule_paging(uint64_t now, std::vector<std::string>& log)
   for (page_entry* e : due) {
     e->last_po = po;
   }
+  char line[256];
+  if (std::all_of(due.begin(), due.end(), [po](const page_entry* e) { return po <= e->skip_until; })) {
+    snprintf(line, sizeof(line), "NB-IoT: paging test: occasion %llu withheld", (unsigned long long)po);
+    log.emplace_back(line);
+    return;
+  }
 
   uint8_t   msg[64];
   const int len = pack_paging_nb(ids, msg, sizeof(msg));
-  char      line[256];
   if (len <= 0) {
     log.emplace_back("NB-IoT: Paging-NB does not pack");
     return;

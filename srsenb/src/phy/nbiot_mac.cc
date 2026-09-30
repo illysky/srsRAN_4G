@@ -43,6 +43,7 @@ bool nbiot_ra_config::from_cell(const nbiot::cell_config& cell, nbiot_ra_config&
   out.r_max         = cell.sib2.npdcch_num_repetitions_ra;
   out.window_pp     = cell.sib2.ra_response_window;
   out.contention_pp = cell.sib2.mac_contention_timer;
+  out.ack_rep_msg4  = cell.sib2.ack_nack_num_repetitions_msg4 ? cell.sib2.ack_nack_num_repetitions_msg4 : 1;
   out.nprach_period_ms = cell.sib2.nprach_periodicity_ms;
   out.nprach_start_ms  = cell.sib2.nprach_start_time_ms;
   out.cell_id          = cell.n_id_ncell;
@@ -578,47 +579,37 @@ bool nbiot_mac::send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_l
     return false;
   }
 
-  srsran_nbiot_dci_n1_t dci = {};
-  dci.i_delay               = 0;
-  dci.i_sf                  = (uint32_t)i_sf;
-  dci.i_mcs                 = (uint32_t)i_tbs;
-  dci.i_rep                 = 0;
-  dci.ndi                   = 0;
-  dci.harq_ack_res          = 0;
-  dci.dci_rep               = (uint32_t)srsran_nbiot_dci_rep_for_rmax(cfg.r_max);
-
+  // The UE's contention resolution timer runs from Msg3 on: every (re)transmission of Msg4 has to be in time for it,
+  // with room for the NPDCCH, NPDSCH and a search space period of margin
   uint32_t period = 0;
   srsran_nbiot_search_space_start(cfg.r_max, cfg.g_halves, cfg.offset_eighths, 0, &period);
   const uint64_t now = srsran_nbiot_dl_sched_now(sched);
-  dl_alloc       a;
-  if (!plan_dl(css(), tc_rnti, dci, pdu, tbs, now, now + (uint64_t)cfg.contention_pp * period / 2, true, a, why)) {
+
+  // From here on the UE is in RRC_CONNECTED with the TC-RNTI as its C-RNTI, once it has acknowledged Msg4, which is
+  // sent through the downlink HARQ process like any other transport block
+  ue_ctx& ue       = ues[tc_rnti];
+  ue               = ue_ctx{};
+  ue.rnti          = tc_rnti;
+  ue.last_rx       = now;
+  ue.msg4          = true;
+  ue.msg4_deadline = now + (uint64_t)cfg.contention_pp * period - period - srsran_nbiot_npdsch_n_sf((uint32_t)i_sf);
+  ue.dl_pdu.assign(pdu, pdu + tb);
+  ue.dl_tbs   = tbs;
+  ue.dl_i_sf  = (uint32_t)i_sf;
+  ue.dl_i_tbs = (uint32_t)i_tbs;
+  ue.dl_ndi   = 0;
+  std::vector<std::string> log;
+  const bool ok = send_dl(ue, now, ue.msg4_deadline, " Msg4, RRCConnectionSetup-NB " + std::to_string(rrc_len) + " bytes", log);
+  for (const std::string& l : log) {
+    srsran::console("%s\n", l.c_str());
+  }
+  if (!ok) {
+    ues.erase(tc_rnti);
+    why = "no room for Msg4 before the contention resolution timer";
     return false;
   }
   cnt.msg4++;
-
-  // From here on the UE is in RRC_CONNECTED with the TC-RNTI as its C-RNTI (once it has acknowledged)
-  ue_ctx& ue    = ues[tc_rnti];
-  ue            = ue_ctx{};
-  ue.rnti       = tc_rnti;
-  ue.busy_until = a.npdsch_end + HARQ_ACK_K0 + HARQ_ACK_SF + UE_GAP_SF;
-  ue.last_rx    = now;
-  srsran::console("NB-IoT: Msg4 to TC-RNTI 0x%04x: RRCConnectionSetup-NB %d bytes, TBS %u (I_TBS %d, I_SF %d), "
-                  "NPDCCH %llu..%llu, NPDSCH %llu..%llu: %s\n",
-                  tc_rnti,
-                  rrc_len,
-                  tbs,
-                  i_tbs,
-                  i_sf,
-                  (unsigned long long)a.npdcch_start,
-                  (unsigned long long)a.npdcch_end,
-                  (unsigned long long)a.npdsch_start,
-                  (unsigned long long)a.npdsch_end,
-                  hex(pdu, tb).c_str());
-  logger.info("NB-IoT Msg4 TC-RNTI 0x%04x TBS %u NPDSCH %llu..%llu",
-              tc_rnti,
-              tbs,
-              (unsigned long long)a.npdsch_start,
-              (unsigned long long)a.npdsch_end);
+  logger.info("NB-IoT Msg4 TC-RNTI 0x%04x TBS %u: %s", tc_rnti, tbs, hex(pdu, tb).c_str());
   return true;
 }
 

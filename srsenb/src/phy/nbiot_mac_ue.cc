@@ -351,7 +351,15 @@ bool nbiot_mac::schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>
     return false;
   }
   if (ue.dl_retx) {
-    return send_dl(ue, t_min, " (retx " + std::to_string(ue.dl_retx_count) + ")", log);
+    if (ue.msg4 && t_min > ue.msg4_deadline) {
+      drop_msg4(ue, "its contention resolution timer runs out", log);
+      return false;
+    }
+    return send_dl(ue,
+                   t_min,
+                   ue.msg4 ? std::min(t_min + 64, ue.msg4_deadline) : t_min + 64,
+                   (ue.msg4 ? " Msg4 (retx " : " (retx ") + std::to_string(ue.dl_retx_count) + ")",
+                   log);
   }
   static const uint32_t order[3] = {NBIOT_LCID_SRB1BIS, NBIOT_LCID_SRB1, NBIOT_LCID_DRB1};
   uint32_t              pending[3];
@@ -441,15 +449,21 @@ bool nbiot_mac::schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>
   for (const auto& s : sdus) {
     what += " LCID " + std::to_string(s.first) + ":" + std::to_string(s.second.size());
   }
-  if (!send_dl(ue, t_min, what, log)) {
+  if (!send_dl(ue, t_min, t_min + 64, what, log)) {
     // Taken from RLC already: the HARQ process keeps it for the next turn
     ue.dl_retx = true;
   }
   return true;
 }
 
-bool nbiot_mac::send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std::vector<std::string>& log)
+bool nbiot_mac::send_dl(ue_ctx&                   ue,
+                        uint64_t                  t_min,
+                        uint64_t                  t_max,
+                        const std::string&        what,
+                        std::vector<std::string>& log)
 {
+  // Msg4 goes in the Type-2 common search space
+  const search_space    ss  = ue.msg4 ? css() : uss();
   srsran_nbiot_dci_n1_t dci = {};
   dci.i_delay               = 0;
   dci.i_sf                  = ue.dl_i_sf;
@@ -457,25 +471,29 @@ bool nbiot_mac::send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std
   dci.i_rep                 = 0;
   dci.ndi                   = ue.dl_ndi;
   dci.harq_ack_res          = 0;
-  dci.dci_rep               = 0;
+  dci.dci_rep               = ue.msg4 ? (uint32_t)srsran_nbiot_dci_rep_for_rmax(cfg.r_max) : 0;
   dl_alloc    a;
   std::string why;
   char        line[256];
 
-  // NBIOT_HARQ_TEST=nack|dtx spoils the first transmission of every fourth transport block: the NPDSCH scrambled for
-  // another RNTI (the UE answers NACK) or the DCI to another RNTI (the UE does not answer)
-  static const char* test    = getenv("NBIOT_HARQ_TEST");
-  static uint32_t    n_test  = 0;
-  const bool         spoil   = test != nullptr && ue.dl_retx_count == 0 && ue.dl_tbs >= 64 && ++n_test % 4 == 0;
-  const bool         to_dtx  = spoil && strcmp(test, "dtx") == 0;
-  const uint16_t     other   = (uint16_t)(ue.rnti ^ 0x0F0F);
-  if (!plan_dl(uss(),
+  // NBIOT_HARQ_TEST=nack|dtx spoils the first transmission of every fourth transport block, msg4nack|msg4dtx that of
+  // every Msg4: the NPDSCH scrambled for another RNTI (the UE answers NACK) or the DCI to another RNTI (no answer);
+  // msg4ghost sends every transmission of a Msg4 to another RNTI, as if the UE had gone
+  static const char* test   = getenv("NBIOT_HARQ_TEST");
+  static uint32_t    n_test = 0;
+  const bool         t_msg4 = test != nullptr && strncmp(test, "msg4", 4) == 0;
+  const bool         ghost  = t_msg4 && ue.msg4 && strcmp(test, "msg4ghost") == 0;
+  const bool         spoil  = test != nullptr && (ghost || (ue.dl_retx_count == 0 &&
+                     (t_msg4 ? ue.msg4 : !ue.msg4 && ue.dl_tbs >= 64 && ++n_test % 4 == 0)));
+  const bool     to_dtx = spoil && (ghost || strcmp(test + (t_msg4 ? 4 : 0), "dtx") == 0);
+  const uint16_t other  = (uint16_t)(ue.rnti ^ 0x0F0F);
+  if (!plan_dl(ss,
                to_dtx ? other : ue.rnti,
                dci,
                ue.dl_pdu.data(),
                ue.dl_tbs,
                t_min,
-               t_min + 64,
+               t_max,
                true,
                a,
                why,
@@ -496,7 +514,7 @@ bool nbiot_mac::send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std
   e.cfg.spacing_hz = 15000;
   e.cfg.sc         = 0;
   e.cfg.n_ru       = 1;
-  e.cfg.n_rep      = 1;
+  e.cfg.n_rep      = ue.msg4 ? cfg.ack_rep_msg4 : 1;
   e.cfg.qm         = 1;
   e.cfg.rnti       = ue.rnti;
   e.cfg.cell_id    = cfg.cell_id;
@@ -506,7 +524,7 @@ bool nbiot_mac::send_dl(ue_ctx& ue, uint64_t t_min, const std::string& what, std
   e.connected      = true;
   if (request_npusch && request_npusch(e, why)) {
     ue.dl_inflight = true;
-    ue.dl_deadline = start + HARQ_ACK_SF + ACK_RESULT_SF;
+    ue.dl_deadline = start + HARQ_ACK_SF * e.cfg.n_rep + ACK_RESULT_SF;
   } else {
     snprintf(line, sizeof(line), "NB-IoT: no HARQ-ACK receiver for 0x%04x: %s", ue.rnti, why.c_str());
     log.emplace_back(line);
@@ -537,9 +555,19 @@ void nbiot_mac::dl_feedback(ue_ctx& ue, bool detected, bool ack, std::vector<std
 {
   ue.dl_inflight = false;
   if (detected && ack) {
+    if (ue.msg4) {
+      char line[128];
+      snprintf(line, sizeof(line), "NB-IoT: 0x%04x acknowledged Msg4: contention resolved", ue.rnti);
+      log.emplace_back(line);
+    }
+    ue.msg4          = false;
     ue.dl_retx       = false;
     ue.dl_retx_count = 0;
     ue.dl_pdu.clear();
+    return;
+  }
+  if (ue.msg4 && ue.dl_retx_count >= MAX_DL_RETX) {
+    drop_msg4(ue, "Msg4 not acknowledged after the last retransmission", log);
     return;
   }
   if (ue.dl_retx_count >= MAX_DL_RETX) {
@@ -557,6 +585,18 @@ void nbiot_mac::dl_feedback(ue_ctx& ue, bool detected, bool ack, std::vector<std
   }
   ue.dl_retx_count++;
   ue.dl_retx = true;
+}
+
+void nbiot_mac::drop_msg4(ue_ctx& ue, const char* why, std::vector<std::string>& log)
+{
+  char line[160];
+  snprintf(line, sizeof(line), "NB-IoT: TC-RNTI 0x%04x dropped, %s (it starts random access again)", ue.rnti, why);
+  log.emplace_back(line);
+  ue.dl_retx     = false;
+  ue.dl_inflight = false;
+  ue.dl_pdu.clear();
+  ue.msg4 = false;
+  ue.gone = true;
 }
 
 bool nbiot_mac::schedule_ul(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log)
@@ -740,12 +780,21 @@ void nbiot_mac::tick()
         ue.ul_retx     = true;
         log.push_back("NB-IoT: no decoder result for an uplink grant");
       }
-      if (now > ue.last_rx + UE_TIMEOUT_SF) {
+      if (ue.gone || now > ue.last_rx + UE_TIMEOUT_SF) {
+        if (!ue.gone) {
+          char line[96];
+          snprintf(line, sizeof(line), "NB-IoT: UE 0x%04x silent for %u ms, dropped", ue.rnti, UE_TIMEOUT_SF);
+          log.emplace_back(line);
+        }
         lost.push_back(ue.rnti);
         continue;
       }
       const uint64_t t_min = std::max(ue.busy_until, now + cfg.lead_sf);
       if (t_min > now + PLAN_AHEAD_SF) {
+        continue;
+      }
+      if (ue.msg4) {
+        schedule_dl(ue, t_min, log);
         continue;
       }
       if (ue.contention) {
@@ -772,7 +821,6 @@ void nbiot_mac::tick()
     logger.info("%s", l.c_str());
   }
   for (uint16_t rnti : lost) {
-    srsran::console("NB-IoT: UE 0x%04x silent for %u ms, dropped\n", rnti, UE_TIMEOUT_SF);
     if (r != nullptr) {
       r->ue_lost(rnti);
     }

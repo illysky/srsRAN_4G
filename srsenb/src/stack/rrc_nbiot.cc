@@ -138,6 +138,7 @@ void rrc_nbiot::ue_lost(uint16_t rnti)
     if (ue == nullptr) {
       return;
     }
+    srsran::console("NB-IoT RRC: UE 0x%04x lost by the MAC, released\n", rnti);
     if (ue->s1ap_known && s1ap->user_exists(rnti)) {
       s1ap->user_release(rnti, asn1::s1ap::cause_radio_network_opts::radio_conn_with_ue_lost);
     } else {
