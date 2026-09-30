@@ -91,6 +91,38 @@ bool nbiot_ra_config::from_cell(const nbiot::cell_config& cell, nbiot_ra_config&
     err = "ra_response_window is 0";
     return false;
   }
+
+  out.paging_t_rf  = cell.sib2.default_paging_cycle_rf;
+  out.paging_r_max = cell.sib2.npdcch_num_repetitions_paging;
+  static const struct {
+    const char* name;
+    uint32_t    num, den;
+  } nbs[] = {{"fourT", 4, 1},      {"twoT", 2, 1},       {"oneT", 1, 1},         {"halfT", 1, 2},
+             {"quarterT", 1, 4},   {"one8thT", 1, 8},    {"one16thT", 1, 16},    {"one32ndT", 1, 32},
+             {"one64thT", 1, 64},  {"one128thT", 1, 128}, {"one256thT", 1, 256}, {"one512thT", 1, 512},
+             {"one1024thT", 1, 1024}};
+  bool nb_ok = false;
+  for (const auto& n : nbs) {
+    if (cell.sib2.nb == n.name) {
+      out.paging_nb_num = n.num;
+      out.paging_nb_den = n.den;
+      nb_ok             = true;
+    }
+  }
+  if (!nb_ok) {
+    err = "pcch nB '" + cell.sib2.nb + "' is not one of fourT .. one1024thT";
+    return false;
+  }
+  if (out.paging_t_rf == 0 || out.paging_t_rf * out.paging_nb_num < out.paging_nb_den) {
+    err = "pcch nB " + cell.sib2.nb + " is less than one paging frame per " + std::to_string(out.paging_t_rf) +
+          " radio frames";
+    return false;
+  }
+  // Type-1 CSS candidates of R = Rmax start at k0 (Table 16.6-2); the scrambler constraint is that of the Type-2 CSS
+  if (out.paging_r_max != 1 && (out.paging_r_max < 4 || out.paging_r_max > 64)) {
+    err = "npdcch_num_repetitions_paging " + std::to_string(out.paging_r_max) + " is not supported (1, or 4..64)";
+    return false;
+  }
   return true;
 }
 
@@ -662,7 +694,7 @@ void nbiot_mac::msg3_received(uint16_t tc_rnti, const uint8_t* pdu, uint32_t len
       if (!send_msg4(tc_rnti, s.data.data() + skip, n - skip, why)) {
         srsran::console("NB-IoT: no Msg4 for TC-RNTI 0x%04x: %s\n", tc_rnti, why.c_str());
       } else if (nbiot_rrc_interface_mac* r = rrc.load()) {
-        r->ue_connected(tc_rnti);
+        r->ue_connected(tc_rnti, s.data.data() + skip, n - skip);
       }
       break;
     }

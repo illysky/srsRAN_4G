@@ -82,7 +82,8 @@ int enb::init(const all_args_t& args_)
                       rrc_cfg.cell_list[0].dl_earfcn);
       return SRSRAN_ERROR;
     }
-    rrc_cfg.nbiot_anchor_prb = (int)nb_cfg.nbiot_prb;
+    rrc_cfg.nbiot_anchor_prb    = (int)nb_cfg.nbiot_prb;
+    rrc_cfg.nbiot_inactivity_ms = nb_cfg.rrc_inactivity_ms;
     srsran::console("NB-IoT in-band anchor on PRB %u (DL EARFCN %u, UL EARFCN %u)\n",
                     nb_cfg.nbiot_prb,
                     nb_cfg.lte_dl_earfcn,

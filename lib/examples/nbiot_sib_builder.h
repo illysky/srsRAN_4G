@@ -146,6 +146,9 @@ struct cell_config {
 
   // SIB2-NB
   sib2_config sib2;
+
+  // eNB behaviour (not broadcast)
+  uint32_t rrc_inactivity_ms = 10000; ///< RRC_CONNECTED UE without signalling or data this long is released
 };
 
 /// Parse and validate. On failure returns false and err says which key is wrong and why.

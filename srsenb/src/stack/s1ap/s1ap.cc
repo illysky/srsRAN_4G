@@ -912,6 +912,9 @@ bool s1ap::handle_paging(const asn1::s1ap::paging_s& msg)
 
   uint32_t ueid = msg->ue_id_idx_value.value.to_number();
   rrc->add_paging_id(ueid, msg->ue_paging_id.value);
+  // Without the NB-IoT index, IMSI mod 1024 still gives the right paging occasion when nB <= T (TS 36.304 7.1)
+  rrc->add_paging_id_nbiot(msg->nb_io_t_ue_id_idx_value_present ? msg->nb_io_t_ue_id_idx_value.value.to_number() : ueid,
+                           msg->ue_paging_id.value);
   return true;
 }
 

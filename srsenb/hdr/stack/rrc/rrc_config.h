@@ -97,6 +97,7 @@ struct rrc_cfg_t {
   bool           etws_present = false;
   bool           cmas_present = false;
   int            nbiot_anchor_prb = -1; ///< in-band NB-IoT anchor PRB of the first cell, -1 if none
+  uint32_t       nbiot_inactivity_ms = 10000; ///< NB-IoT RRC_CONNECTED UEs are released after this much silence
 };
 
 constexpr uint32_t UE_PCELL_CC_IDX = 0;

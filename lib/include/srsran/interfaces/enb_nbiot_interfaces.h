@@ -23,6 +23,7 @@
 #define SRSRAN_ENB_NBIOT_INTERFACES_H
 
 #include <cstdint>
+#include <vector>
 
 namespace srsenb {
 
@@ -45,8 +46,8 @@ class nbiot_rrc_interface_mac
 public:
   virtual ~nbiot_rrc_interface_mac() = default;
 
-  /// Msg4 went out: the UE is in RRC_CONNECTED with SRB1bis and SRB1 configured
-  virtual void ue_connected(uint16_t rnti) = 0;
+  /// Msg4 went out: the UE is in RRC_CONNECTED with SRB1bis and SRB1 configured; ccch is its RRCConnectionRequest-NB
+  virtual void ue_connected(uint16_t rnti, const uint8_t* ccch, uint32_t ccch_len) = 0;
   /// The MAC gave up on the UE (no uplink for a long time)
   virtual void ue_lost(uint16_t rnti) = 0;
   /// An uplink MAC SDU
@@ -55,6 +56,14 @@ public:
   virtual int read_pdu(uint16_t rnti, uint32_t lcid, uint8_t* payload, uint32_t nof_bytes) = 0;
   /// Bytes waiting for transmission on lcid (RLC data, retransmissions and status)
   virtual uint32_t dl_buffer(uint16_t rnti, uint32_t lcid) = 0;
+};
+
+/// What a UE is paged with (TS 36.331 PagingUE-Identity)
+struct nbiot_paging_id {
+  bool                 s_tmsi = true;
+  uint8_t              mmec   = 0;
+  uint32_t             m_tmsi = 0;
+  std::vector<uint8_t> imsi; ///< digits, if not s_tmsi
 };
 
 /// The NB-IoT MAC as seen by the NB-IoT RRC. Any thread.
@@ -66,6 +75,10 @@ public:
   virtual void set_rrc(nbiot_rrc_interface_mac* rrc) = 0;
   /// Stop scheduling the UE and forget it
   virtual void release_ue(uint16_t rnti) = 0;
+  /// Page the UE at its paging occasions; ue_id = IMSI mod 4096 (TS 36.304 7.1). Repeated requests refresh the page.
+  virtual void page(uint32_t ue_id, const nbiot_paging_id& id) = 0;
+  /// The UE paged with this S-TMSI has connected: stop paging it
+  virtual void paging_answered(uint8_t mmec, uint32_t m_tmsi) = 0;
 };
 
 } // namespace srsenb

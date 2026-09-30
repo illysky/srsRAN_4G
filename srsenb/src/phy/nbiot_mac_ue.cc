@@ -625,9 +625,10 @@ void nbiot_mac::tick()
   {
     std::lock_guard<std::mutex> guard(lock);
     const uint64_t              now = initiated ? srsran_nbiot_dl_sched_now(sched) : 0;
-    if (now == 0 || ues.empty()) {
+    if (now == 0) {
       return;
     }
+    schedule_paging(now, log);
     for (auto& kv : ues) {
       ue_ctx& ue = kv.second;
       if (ue.ul_inflight) {

@@ -75,7 +75,7 @@ public:
   pdcp_interface_gtpu* get_pdcp_gtpu() { return &pdcp; }
 
   // nbiot_rrc_interface_mac
-  void     ue_connected(uint16_t rnti) override;
+  void     ue_connected(uint16_t rnti, const uint8_t* ccch, uint32_t ccch_len) override;
   void     ue_lost(uint16_t rnti) override;
   void     write_pdu(uint16_t rnti, uint32_t lcid, const uint8_t* payload, uint32_t nof_bytes) override;
   int      read_pdu(uint16_t rnti, uint32_t lcid, uint8_t* payload, uint32_t nof_bytes) override;
@@ -112,7 +112,8 @@ public:
                    srsran::const_span<uint8_t>                nas_pdu,
                    asn1::s1ap::cause_c&                       cause) override;
   int  release_erab(uint16_t rnti, uint16_t erab_id) override;
-  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override {}
+  /// ueid: IMSI mod 4096
+  void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override;
   int  notify_ue_erab_updates(uint16_t rnti, srsran::const_span<uint8_t> nas_pdu) override;
   void ho_preparation_complete(uint16_t                     rnti,
                                ho_prep_result               result,
@@ -161,6 +162,12 @@ private:
     security_cfg_handler       sec;
     std::map<uint16_t, erab_t> erabs;
     srsran::unique_timer       release_timer;
+    srsran::unique_timer       inactivity_timer;
+    // From RRCConnectionRequest-NB
+    bool                                  s_tmsi = false;
+    uint8_t                               mmec   = 0;
+    uint32_t                              m_tmsi = 0;
+    asn1::s1ap::rrc_establishment_cause_e cause  = asn1::s1ap::rrc_establishment_cause_opts::mo_sig;
   };
 
   srsran::task_sched_handle task_sched;
@@ -182,13 +189,15 @@ private:
   std::map<std::pair<uint16_t, uint32_t>, uint32_t> buffers;
 
   ue_t* find(uint16_t rnti);
-  void  add_ue(uint16_t rnti);
+  void  add_ue(uint16_t rnti, const std::vector<uint8_t>& ccch);
   void  remove_ue(uint16_t rnti);
   void  handle_ul_dcch(uint16_t rnti, uint32_t lcid, srsran::unique_byte_buffer_t pdu);
   void  send_dl_dcch(ue_t& ue, const asn1::rrc::dl_dcch_msg_nb_s& msg, const char* what);
   void  send_security_mode_command(ue_t& ue);
   void  send_reconfiguration(ue_t& ue);
   void  send_release(ue_t& ue);
+  /// Signalling or data went either way: the connection is released after cfg.inactivity_timeout_ms of silence
+  void  activity(ue_t& ue);
 };
 
 /// S1AP talks to one RRC; this one passes NB-IoT RNTIs to rrc_nbiot and the rest to the LTE RRC
@@ -242,6 +251,12 @@ public:
   void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override
   {
     lte->add_paging_id(ueid, ue_paging_id);
+  }
+  void add_paging_id_nbiot(uint32_t nb_ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) override
+  {
+    if (nbiot != nullptr) {
+      nbiot->add_paging_id(nb_ueid, ue_paging_id);
+    }
   }
   int notify_ue_erab_updates(uint16_t rnti, srsran::const_span<uint8_t> nas_pdu) override
   {

@@ -386,6 +386,14 @@ bool load_config(libconfig::Config& cfg, cell_config& o, std::string& err)
     err = "nbiot.sib2.nprach.nof_ce_levels must be 1: multiple coverage-enhancement levels are not implemented";
     return false;
   }
+  if (cfg.exists("nbiot.rrc.inactivity_timer_ms") &&
+      !get(cfg, "nbiot.rrc.inactivity_timer_ms", o.rrc_inactivity_ms, err)) {
+    return false;
+  }
+  if (o.rrc_inactivity_ms < 1000) {
+    err = "nbiot.rrc.inactivity_timer_ms must be at least 1000";
+    return false;
+  }
   if (z.nrs_power_dbm < -60 || z.nrs_power_dbm > 50) {
     err = "nbiot.sib2.npdsch.nrs_power_dbm must be -60..50";
     return false;

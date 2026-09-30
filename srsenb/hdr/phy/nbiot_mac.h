@@ -72,6 +72,12 @@ struct nbiot_ra_config {
   bool     group_hopping = false;
   uint32_t delta_ss      = 0;
 
+  // Paging (PCCH-Config-NB, TS 36.304 7.1): nB = T * nb_num / nb_den
+  uint32_t paging_t_rf   = 0; ///< defaultPagingCycle, radio frames
+  uint32_t paging_nb_num = 1;
+  uint32_t paging_nb_den = 1;
+  uint32_t paging_r_max  = 0; ///< npdcch-NumRepetitionPaging
+
   // What the response contains
   uint32_t                  rar_i_rep = 2;                ///< repetitions of the RAR NPDSCH: Table 16.4.1.3-2 index
   srsran_nbiot_msg3_grant_t msg3      = {1, 6, 0, 0, 0};  ///< 15 kHz, tone 6, k0 = 12, 1 repetition, 4 RUs of BPSK
@@ -140,6 +146,12 @@ public:
 
   void set_rrc(nbiot_rrc_interface_mac* rrc_) override { rrc = rrc_; }
   void release_ue(uint16_t rnti) override;
+  void page(uint32_t ue_id, const nbiot_paging_id& id) override;
+  void paging_answered(uint8_t mmec, uint32_t m_tmsi) override;
+
+  /// First paging occasion of UE_ID at or after absolute subframe t (TS 36.304 7.1, 7.2), before NB-IoT DL subframe
+  /// validity is applied (the NPDCCH starts at the first valid one from there)
+  static uint64_t paging_occasion(const nbiot_ra_config& cfg, uint32_t ue_id, uint64_t t);
 
   /// Schedules the connected UEs; call once per subframe (txrx thread)
   void tick();
@@ -257,6 +269,19 @@ private:
 
   /// Contention resolution and RRCConnectionSetup-NB for the UE whose Msg3 carried ccch (TS 36.321 5.1.5, 36.331 5.3.3)
   bool send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_len, std::string& why);
+
+  /// A UE being paged: sent at each of its paging occasions until it connects or the request is old
+  struct page_entry {
+    uint32_t        ue_id   = 0;
+    nbiot_paging_id id;
+    uint64_t        expiry  = 0; ///< absolute subframe
+    uint64_t        last_po = 0; ///< last paging occasion planned for it
+    uint32_t        sent    = 0;
+  };
+  std::vector<page_entry> pages;
+
+  /// Plans the Paging-NB of the next paging occasion that is close enough, if any; caller holds the lock
+  void schedule_paging(uint64_t now, std::vector<std::string>& log);
 };
 
 } // namespace srsenb

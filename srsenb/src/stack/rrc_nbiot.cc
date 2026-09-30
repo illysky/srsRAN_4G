@@ -125,9 +125,10 @@ rrc_nbiot::ue_t* rrc_nbiot::find(uint16_t rnti)
 
 /* ------------------------------------------------------------------------------------------ from the MAC (any thread) */
 
-void rrc_nbiot::ue_connected(uint16_t rnti)
+void rrc_nbiot::ue_connected(uint16_t rnti, const uint8_t* ccch, uint32_t ccch_len)
 {
-  queue.push([this, rnti]() { add_ue(rnti); });
+  std::vector<uint8_t> c(ccch, ccch + ccch_len);
+  queue.push([this, rnti, c]() { add_ue(rnti, c); });
 }
 
 void rrc_nbiot::ue_lost(uint16_t rnti)
@@ -149,10 +150,12 @@ void rrc_nbiot::write_pdu(uint16_t rnti, uint32_t lcid, const uint8_t* payload, 
 {
   std::vector<uint8_t> copy(payload, payload + nof_bytes);
   queue.push([this, rnti, lcid, copy]() mutable {
-    if (find(rnti) == nullptr) {
+    ue_t* ue = find(rnti);
+    if (ue == nullptr) {
       logger.warning("NB-IoT: uplink for unknown rnti=0x%x", rnti);
       return;
     }
+    activity(*ue);
     rlc.write_pdu(rnti, lcid, copy.data(), (uint32_t)copy.size());
   });
 }
@@ -178,15 +181,69 @@ int rrc_nbiot::rlc_buffer_state(uint16_t rnti, uint32_t lc_id, uint32_t tx_queue
 
 /* --------------------------------------------------------------------------------------------------- UE lifetime */
 
-void rrc_nbiot::add_ue(uint16_t rnti)
+void rrc_nbiot::add_ue(uint16_t rnti, const std::vector<uint8_t>& ccch)
 {
   if (find(rnti) != nullptr) {
     remove_ue(rnti);
   }
   std::unique_ptr<ue_t> ue(new ue_t(cfg));
-  ue->rnti          = rnti;
-  ue->release_timer = task_sched.get_unique_timer();
-  users[rnti]       = std::move(ue);
+  ue->rnti             = rnti;
+  ue->release_timer    = task_sched.get_unique_timer();
+  ue->inactivity_timer = task_sched.get_unique_timer();
+  ue->inactivity_timer.set(cfg.nbiot_inactivity_ms, [this, rnti](uint32_t) {
+    ue_t* u = find(rnti);
+    if (u == nullptr || u->state == ue_state::releasing) {
+      return;
+    }
+    srsran::console("NB-IoT RRC: UE 0x%04x inactive for %u ms, releasing\n", rnti, cfg.nbiot_inactivity_ms);
+    if (u->s1ap_known && s1ap->user_exists(rnti)) {
+      s1ap->user_release(rnti, asn1::s1ap::cause_radio_network_opts::user_inactivity);
+    } else {
+      release_ue(rnti);
+    }
+  });
+  ue->inactivity_timer.run();
+
+  asn1::rrc::ul_ccch_msg_nb_s req;
+  asn1::cbit_ref              bref(ccch.data(), (uint32_t)ccch.size());
+  if (req.unpack(bref) == asn1::SRSASN_SUCCESS && req.msg.type().value == asn1::rrc::ul_ccch_msg_type_nb_c::types_opts::c1 &&
+      req.msg.c1().type().value == asn1::rrc::ul_ccch_msg_type_nb_c::c1_c_::types_opts::rrc_conn_request_r13 &&
+      req.msg.c1().rrc_conn_request_r13().crit_exts.type().value ==
+          asn1::rrc::rrc_conn_request_nb_s::crit_exts_c_::types_opts::rrc_conn_request_r13) {
+    const auto& ies = req.msg.c1().rrc_conn_request_r13().crit_exts.rrc_conn_request_r13();
+    if (ies.ue_id_r13.type().value == asn1::rrc::init_ue_id_c::types_opts::s_tmsi) {
+      ue->s_tmsi = true;
+      ue->mmec   = (uint8_t)ies.ue_id_r13.s_tmsi().mmec.to_number();
+      ue->m_tmsi = (uint32_t)ies.ue_id_r13.s_tmsi().m_tmsi.to_number();
+    }
+    using nb = asn1::rrc::establishment_cause_nb_r13_opts;
+    using s1 = asn1::s1ap::rrc_establishment_cause_opts;
+    switch (ies.establishment_cause_r13.value) {
+      case nb::mt_access:
+        ue->cause = s1::mt_access;
+        break;
+      case nb::mo_data:
+        ue->cause = s1::mo_data;
+        break;
+      case nb::mo_exception_data:
+        ue->cause = s1::mo_exception_data;
+        break;
+      case nb::delay_tolerant_access_v1330:
+        ue->cause = s1::delay_tolerant_access;
+        break;
+      default:
+        ue->cause = s1::mo_sig;
+        break;
+    }
+    srsran::console("NB-IoT RRC: UE 0x%04x requests a connection for %s%s\n",
+                    rnti,
+                    ies.establishment_cause_r13.to_string(),
+                    ue->s_tmsi ? " with an S-TMSI" : "");
+    if (ue->s_tmsi && mac != nullptr) {
+      mac->paging_answered(ue->mmec, ue->m_tmsi);
+    }
+  }
+  users[rnti] = std::move(ue);
 
   // What RRCConnectionSetup-NB gave the UE: SRB1bis and SRB1 with the default RLC AM configuration
   rlc.add_user(rnti);
@@ -218,6 +275,13 @@ void rrc_nbiot::remove_ue(uint16_t rnti)
   }
   users.erase(rnti);
   srsran::console("NB-IoT RRC: UE 0x%04x removed\n", rnti);
+}
+
+void rrc_nbiot::activity(ue_t& ue)
+{
+  if (ue.state != ue_state::releasing) {
+    ue.inactivity_timer.run();
+  }
 }
 
 /* ------------------------------------------------------------------------------------------------- RLC / PDCP side */
@@ -323,16 +387,18 @@ void rrc_nbiot::handle_ul_dcch(uint16_t rnti, uint32_t lcid, srsran::unique_byte
       memcpy(nas->msg, ies.ded_info_nas_r13.data(), ies.ded_info_nas_r13.size());
       nas->N_bytes   = (uint32_t)ies.ded_info_nas_r13.size();
       ue->s1ap_known = true;
-      const auto cause = asn1::s1ap::rrc_establishment_cause_opts::mo_sig;
       if (ies.s_tmsi_r13_present) {
-        s1ap->initial_ue(rnti,
-                         0,
-                         cause,
-                         std::move(nas),
-                         (uint32_t)ies.s_tmsi_r13.m_tmsi.to_number(),
-                         (uint8_t)ies.s_tmsi_r13.mmec.to_number());
+        ue->s_tmsi = true;
+        ue->mmec   = (uint8_t)ies.s_tmsi_r13.mmec.to_number();
+        ue->m_tmsi = (uint32_t)ies.s_tmsi_r13.m_tmsi.to_number();
+        if (mac != nullptr) {
+          mac->paging_answered(ue->mmec, ue->m_tmsi);
+        }
+      }
+      if (ue->s_tmsi) {
+        s1ap->initial_ue(rnti, 0, ue->cause, std::move(nas), ue->m_tmsi, ue->mmec);
       } else {
-        s1ap->initial_ue(rnti, 0, cause, std::move(nas));
+        s1ap->initial_ue(rnti, 0, ue->cause, std::move(nas));
       }
       srsran::console("NB-IoT RRC: 0x%04x: InitialUEMessage to the MME\n", rnti);
       break;
@@ -450,7 +516,37 @@ void rrc_nbiot::write_dl_info(uint16_t rnti, srsran::unique_byte_buffer_t sdu)
   auto& ies = msg.msg.set_c1().set_dl_info_transfer_r13().crit_exts.set_c1().set_dl_info_transfer_r13();
   ies.ded_info_nas_r13.resize(sdu->N_bytes);
   memcpy(ies.ded_info_nas_r13.data(), sdu->msg, sdu->N_bytes);
+  activity(*ue);
   send_dl_dcch(*ue, msg, "DLInformationTransfer-NB");
+}
+
+void rrc_nbiot::add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id)
+{
+  if (mac == nullptr) {
+    return;
+  }
+  nbiot_paging_id id;
+  if (ue_paging_id.type().value == asn1::s1ap::ue_paging_id_c::types_opts::s_tmsi) {
+    const auto& s = ue_paging_id.s_tmsi();
+    id.s_tmsi     = true;
+    id.mmec       = s.mmec[0];
+    id.m_tmsi     = ((uint32_t)s.m_tmsi[0] << 24) | ((uint32_t)s.m_tmsi[1] << 16) | ((uint32_t)s.m_tmsi[2] << 8) |
+                s.m_tmsi[3];
+    srsran::console("NB-IoT RRC: paging S-TMSI %02x-%08x (UE_ID %u)\n", id.mmec, id.m_tmsi, ueid);
+  } else {
+    // TBCD (TS 29.274 8.3): two digits per octet, low nibble first, 0xF filler
+    id.s_tmsi = false;
+    for (uint32_t i = 0; i < ue_paging_id.imsi().size(); i++) {
+      const uint8_t o = ue_paging_id.imsi()[i];
+      for (uint8_t d : {(uint8_t)(o & 0x0f), (uint8_t)(o >> 4)}) {
+        if (d <= 9) {
+          id.imsi.push_back(d);
+        }
+      }
+    }
+    srsran::console("NB-IoT RRC: paging IMSI (UE_ID %u)\n", ueid);
+  }
+  mac->page(ueid % 4096, id);
 }
 
 void rrc_nbiot::release_ue(uint16_t rnti)
