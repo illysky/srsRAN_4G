@@ -570,7 +570,8 @@ def main():
 
     def make_model(hfn):
         mibs = {b: mib_nb_bits(b, hfn, sched, tag, ab, crs_seq) for b in range(0, 1024, 64)}
-        m = chk.Model(pci, sched, hfn, sync, sched_mod, mibs, sib1, [([1, si_periodicity, si_offset, si_pattern, si_tb, si_window], sib2)])
+        m = chk.Model(pci, sched, hfn, sync, sched_mod, mibs, sib1, [([1, si_periodicity, si_offset, si_pattern, si_tb, si_window], sib2)],
+                      nof_prb, anchor)
         m.prepare_si(hfn * 1024, hfn * 1024 + 1100)
         return m
 
@@ -620,7 +621,8 @@ def main():
         i = first + (t - t0)
         if i < 0 or i >= nsf:
             return None
-        return grid(i)[:, lo_:hi_]
+        # a UE sees the anchor without the in-band phase of TS 36.211 10.2.8
+        return grid(i)[:, lo_:hi_] * np.conj(chk.inband_phase(nof_prb, anchor, t % 10))[:, None]
 
     ra_cfg = {'pci': pci, 'n_rep': nprach['n_rep'], 'fmt': 1 if nprach['cp_us'] > 100.0 else 0,
               'window_pp': conf_int(nb, 'ra_response_window'), 'r_max': conf_int(nb, 'npdcch_num_repetitions_ra'),

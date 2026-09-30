@@ -20,6 +20,7 @@
  */
 
 #include "srsran/phy/ue/ue_dl_nbiot.h"
+#include "srsran/phy/phch/nbiot_grid.h"
 
 #include <assert.h>
 #include <complex.h>
@@ -520,6 +521,9 @@ int srsran_nbiot_ue_dl_decode_fft_estimate(srsran_nbiot_ue_dl_t* q, uint32_t sf_
                            q->sample_offset / q->fft.cfg.symbol_sz);
       }
     }
+
+    // In-band, the whole LTE carrier was demodulated: undo the phase of TS 36.211 10.2.8 on the NB-IoT PRB
+    srsran_nbiot_inband_rotate(&q->cell, sf_idx, 0, true, q->sf_symbols);
 
     bool sf_has_nrs = false;
 

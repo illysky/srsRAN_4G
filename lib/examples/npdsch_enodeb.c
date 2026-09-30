@@ -34,6 +34,7 @@
 #include "srsran/phy/channel/ch_awgn.h"
 #include "srsran/phy/io/filesink.h"
 #include "srsran/phy/io/filesource.h"
+#include "srsran/phy/phch/nbiot_grid.h"
 #include "srsran/phy/sync/npss.h"
 #include "srsran/phy/sync/nsss.h"
 #include "srsran/phy/ue/ue_dl_nbiot.h"
@@ -789,6 +790,9 @@ int main(int argc, char** argv)
         }
       }
 #endif
+
+      // In-band the LTE-wide modulator is used: the NB-IoT PRB carries the phase of TS 36.211 10.2.8
+      srsran_nbiot_inband_rotate(&cell, sf_idx, 0, false, sf_buffer);
 
       /* Transform to OFDM symbols */
       srsran_ofdm_tx_sf(&ifft);

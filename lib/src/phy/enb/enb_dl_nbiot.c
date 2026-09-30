@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "srsran/phy/phch/nbiot_grid.h"
 #include "srsran/phy/utils/vector.h"
 
 #define GRID_W(q) ((q)->cell.base.nof_prb * SRSRAN_NRE)
@@ -428,7 +429,13 @@ int srsran_enb_dl_nbiot_put_sf(srsran_enb_dl_nbiot_t* q,
     }
   }
 
-  // 3. LTE's CRS win over anything NB-IoT put there (NPSS/NSSS elements on CRS REs are "not used"), on every LTE port:
+  // 3. The LTE OFDM modulator is centred on the LTE carrier; TS 36.211 10.2.8 defines the in-band NB-IoT resource
+  // elements with a per-symbol phase that makes them what a receiver centred on the anchor expects
+  for (uint32_t p = 0; p < q->cell.nof_ports; p++) {
+    srsran_nbiot_inband_rotate(&q->cell, sf_idx, SRSRAN_ENB_DL_NBIOT_L_START, false, nb_grid[p]);
+  }
+
+  // 4. LTE's CRS win over anything NB-IoT put there (NPSS/NSSS elements on CRS REs are "not used"), on every LTE port:
   // the owning port carries its CRS, the other ports are silent on that RE
   for (uint32_t i = 0; i < q->nof_crs_re; i++) {
     for (uint32_t p = 0; p < q->lte_nof_ports; p++) {

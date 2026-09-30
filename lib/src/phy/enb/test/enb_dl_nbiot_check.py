@@ -190,8 +190,22 @@ def nrs_values(pci, sf):
     return vals
 
 
+def inband_phase(nof_prb, prb, sf):
+    """e^(j theta_l') of TS 36.211 10.2.8 for the 14 symbols of subframe sf, NB-IoT in PRB prb of an nof_prb carrier."""
+    n_sc = 12 * nof_prb
+    idx = np.arange(12 * prb, 12 * prb + 12)
+    f_sc = np.mean(np.where(idx < n_sc // 2, idx - n_sc // 2, idx - n_sc // 2 + 1))   # f_NB-IoT / 15 kHz
+    out = np.zeros(14, dtype=complex)
+    for l in range(14):
+        lp = l + 14 * (sf % 2)
+        n_cp = sum(160 if i % 7 == 0 else 144 for i in range(lp + 1))
+        out[l] = np.exp(2j * np.pi * f_sc * (lp * 2048 + n_cp) / 2048)
+    return out
+
+
 class Model:
-    def __init__(self, pci, sched, hfn, sync, sched_mod, mib_bits, sib1, si_list):
+    def __init__(self, pci, sched, hfn, sync, sched_mod, mib_bits, sib1, si_list, nof_prb, anchor):
+        self.phase = [inband_phase(nof_prb, anchor, sf) for sf in range(2)]
         self.dyn = {}          # absolute subframe -> (flag, {(l, k): value})
         self.pci, self.sched, self.hfn = pci, sched, hfn
         self.sync = sync
@@ -320,6 +334,8 @@ class Model:
                 g[l, k] = v
             flags |= dflag
 
+        # everything NB-IoT carries the in-band phase; the LTE CRS and control region put back below do not
+        g = g * self.phase[sf % 2][:, None]
         # CRS wins
         for (l, k) in self.crs:
             g[l, k] = pre[l, k]
@@ -414,7 +430,7 @@ def run_case(dump, sync, sched_mod, name, nof_prb, anchor, pci, sched, hfn, nfra
         info = parse_stdout(res.stdout)
         data = np.fromfile(binf, dtype=np.complex64).reshape(nframes * 10, 2, 14, 12)
 
-    model = Model(pci, sched, hfn, sync, sched_mod, info['mib'], info['sib1'], info['si'])
+    model = Model(pci, sched, hfn, sync, sched_mod, info['mib'], info['sib1'], info['si'], nof_prb, anchor)
     model.prepare_si(hfn * 1024, hfn * 1024 + nframes + 4)
 
     stats = {'re': 0, 'bad': 0, 'sf': 0, 'kinds': {HAS_NPSS: 0, HAS_NSSS: 0, HAS_NPBCH: 0, HAS_SIB1: 0, HAS_SI: 0,

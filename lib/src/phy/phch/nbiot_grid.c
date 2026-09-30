@@ -21,6 +21,8 @@
 
 #include "srsran/phy/phch/nbiot_grid.h"
 
+#include <complex.h>
+#include <math.h>
 #include <string.h>
 
 void srsran_nbiot_reserved_res(const srsran_nbiot_cell_t* cell, bool reserved[SRSRAN_CP_NORM_SF_NSYMB][SRSRAN_NRE])
@@ -92,4 +94,53 @@ uint32_t srsran_nbiot_grid_nof_data_re(const srsran_nbiot_cell_t* cell, uint32_t
     }
   }
   return n;
+}
+
+double srsran_nbiot_inband_freq_offset_sc(uint32_t nof_prb, uint32_t nbiot_prb)
+{
+  // TS 36.211 6.12: LTE subcarrier index i sits at (i - N_sc/2) below DC and (i - N_sc/2 + 1) above it (DC unused)
+  const int half = (int)(nof_prb * SRSRAN_NRE) / 2;
+  double    sum  = 0.0;
+  for (int k = 0; k < SRSRAN_NRE; k++) {
+    int i = (int)(nbiot_prb * SRSRAN_NRE) + k;
+    sum += (i < half) ? (i - half) : (i - half + 1);
+  }
+  return sum / SRSRAN_NRE;
+}
+
+cf_t srsran_nbiot_inband_phase(uint32_t nof_prb, uint32_t nbiot_prb, uint32_t sf_idx, uint32_t l)
+{
+  // theta = 2 pi f_NB-IoT Ts (l' N + sum_{i=0..l'} N_CP,(i mod 7)), l' counted from the last even-numbered subframe,
+  // N = 2048 and Ts = 1 / (2048 * 15 kHz): so f_NB-IoT Ts = offset_sc / 2048
+  const double   f     = srsran_nbiot_inband_freq_offset_sc(nof_prb, nbiot_prb);
+  const uint32_t l_abs = l + SRSRAN_CP_NORM_SF_NSYMB * (sf_idx % 2);
+  double         cp    = 0.0;
+  for (uint32_t i = 0; i <= l_abs; i++) {
+    cp += (i % SRSRAN_CP_NORM_NSYMB == 0) ? 160.0 : 144.0;
+  }
+  double cycles = f * (double)l_abs + f * cp / 2048.0;
+  cycles -= floor(cycles);
+  return cexpf(I * (float)(2.0 * M_PI * cycles));
+}
+
+void srsran_nbiot_inband_rotate(const srsran_nbiot_cell_t* cell,
+                                uint32_t                   sf_idx,
+                                uint32_t                   l_start,
+                                bool                       inverse,
+                                cf_t*                      sf_symbols)
+{
+  if (cell->mode != SRSRAN_NBIOT_MODE_INBAND_SAME_PCI && cell->mode != SRSRAN_NBIOT_MODE_INBAND_DIFFERENT_PCI) {
+    return;
+  }
+  const uint32_t w = cell->base.nof_prb * SRSRAN_NRE;
+  for (uint32_t l = l_start; l < SRSRAN_CP_NORM_SF_NSYMB; l++) {
+    cf_t ph = srsran_nbiot_inband_phase(cell->base.nof_prb, cell->nbiot_prb, sf_idx, l);
+    if (inverse) {
+      ph = conjf(ph);
+    }
+    cf_t* re = &sf_symbols[l * w + cell->nbiot_prb * SRSRAN_NRE];
+    for (uint32_t k = 0; k < SRSRAN_NRE; k++) {
+      re[k] *= ph;
+    }
+  }
 }

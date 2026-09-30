@@ -49,4 +49,21 @@ SRSRAN_API void srsran_nbiot_reserved_res(const srsran_nbiot_cell_t* cell,
 /// Number of resource elements per subframe available for NPDSCH/NPDCCH from symbol l_start on
 SRSRAN_API uint32_t srsran_nbiot_grid_nof_data_re(const srsran_nbiot_cell_t* cell, uint32_t l_start);
 
+/// Offset of the centre of PRB nbiot_prb from the centre (DC) of an nof_prb LTE carrier, in subcarriers (f_NB-IoT / 15 kHz)
+SRSRAN_API double srsran_nbiot_inband_freq_offset_sc(uint32_t nof_prb, uint32_t nbiot_prb);
+
+/// e^(j theta_{k,l'}) of TS 36.211 10.2.8 for OFDM symbol l (0..13) of subframe sf_idx: the phase an in-band NB-IoT
+/// resource element carries when the carrier is generated with the LTE OFDM modulator, so that a receiver centred on
+/// the NB-IoT PRB sees the signal of the NB-IoT baseband definition. Not applied to LTE's own resource elements (CRS).
+SRSRAN_API cf_t srsran_nbiot_inband_phase(uint32_t nof_prb, uint32_t nbiot_prb, uint32_t sf_idx, uint32_t l);
+
+/// Multiplies the NB-IoT PRB of an LTE-width subframe grid (14 symbols of nof_prb * 12 subcarriers), symbols l_start..13,
+/// by srsran_nbiot_inband_phase() (inverse: by its conjugate, what a receiver demodulating the whole LTE carrier does).
+/// Does nothing unless cell->mode is in-band.
+SRSRAN_API void srsran_nbiot_inband_rotate(const srsran_nbiot_cell_t* cell,
+                                           uint32_t                   sf_idx,
+                                           uint32_t                   l_start,
+                                           bool                       inverse,
+                                           cf_t*                      sf_symbols);
+
 #endif // SRSRAN_NBIOT_GRID_H
