@@ -144,7 +144,8 @@ SRSRAN_API void srsran_enb_dl_nbiot_set_sched(srsran_enb_dl_nbiot_t* q, srsran_n
 /// What the cell broadcasts where, for planning transmissions that must stay clear of it. Needs the MIB.
 SRSRAN_API int srsran_enb_dl_nbiot_get_layout(const srsran_enb_dl_nbiot_t* q, srsran_nbiot_layout_t* layout);
 
-/// Writes the NB-IoT anchor PRB of subframe sf_idx of radio frame sfn (hyperframe hfn) into sf_symbols, one grid per
+/// Writes the NB-IoT anchor PRB of subframe sf_idx of radio frame sfn (hyperframe hfn, which may exceed 1023: the
+/// broadcast uses its 10 LSBs and the scheduling table the absolute subframe) into sf_symbols, one grid per
 /// LTE port. The grids hold the LTE signal on entry. Returns a mask of SRSRAN_ENB_DL_NBIOT_HAS_*, or a negative error.
 SRSRAN_API int srsran_enb_dl_nbiot_put_sf(srsran_enb_dl_nbiot_t* q,
                                           uint32_t               hfn,

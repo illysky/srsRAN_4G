@@ -35,7 +35,12 @@
 #include "srsran/phy/channel/channel.h"
 #include "srsran/radio/radio.h"
 
+extern "C" {
+#include "srsran/phy/phch/nbiot_dl_sched.h"
+}
+
 #include <map>
+#include <memory>
 #include <srsran/common/tti_sempahore.h>
 #include <string.h>
 
@@ -70,6 +75,9 @@ public:
 
   // Common objects
   phy_args_t params = {};
+
+  // NB-IoT: NPDCCH/NPDSCH the MAC has planned, read by the downlink workers of the first carrier. Null without NB-IoT.
+  std::shared_ptr<srsran_nbiot_dl_sched_t> nbiot_sched;
 
   uint32_t get_nof_carriers_lte() { return static_cast<uint32_t>(cell_list_lte.size()); }
   uint32_t get_nof_carriers_nr() { return static_cast<uint32_t>(cell_list_nr.size()); }

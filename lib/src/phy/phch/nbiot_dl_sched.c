@@ -201,6 +201,8 @@ typedef struct {
 struct srsran_nbiot_dl_sched_st {
   pthread_mutex_t lock;
   uint64_t        now;
+  bool                  layout_set;
+  srsran_nbiot_layout_t layout;
   slot_t          slot[SRSRAN_NBIOT_DL_SCHED_SLOTS];
   object_t        obj[SRSRAN_NBIOT_DL_SCHED_OBJECTS];
 };
@@ -342,6 +344,25 @@ uint64_t srsran_nbiot_dl_sched_now(srsran_nbiot_dl_sched_t* s)
   uint64_t n = s->now;
   pthread_mutex_unlock(&s->lock);
   return n;
+}
+
+void srsran_nbiot_dl_sched_set_layout(srsran_nbiot_dl_sched_t* s, const srsran_nbiot_layout_t* l)
+{
+  pthread_mutex_lock(&s->lock);
+  s->layout     = *l;
+  s->layout_set = true;
+  pthread_mutex_unlock(&s->lock);
+}
+
+bool srsran_nbiot_dl_sched_get_layout(srsran_nbiot_dl_sched_t* s, srsran_nbiot_layout_t* l)
+{
+  pthread_mutex_lock(&s->lock);
+  const bool set = s->layout_set;
+  if (set) {
+    *l = s->layout;
+  }
+  pthread_mutex_unlock(&s->lock);
+  return set;
 }
 
 bool srsran_nbiot_dl_sched_busy(srsran_nbiot_dl_sched_t* s, uint64_t t)

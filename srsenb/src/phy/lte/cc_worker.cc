@@ -137,7 +137,7 @@ void cc_worker::init(phy_common* phy_, uint32_t cc_idx_)
   if (cc_idx == 0 && !phy->params.nbiot_config.empty()) {
     std::string err;
     nbiot = std::make_unique<nbiot_dl>();
-    if (!nbiot->init(phy->params.nbiot_config, cell, logger, err)) {
+    if (!nbiot->init(phy->params.nbiot_config, cell, logger, err, phy->nbiot_sched.get())) {
       ERROR("NB-IoT (%s): %s", phy->params.nbiot_config.c_str(), err.c_str());
       srsran::console("NB-IoT (%s): %s\n", phy->params.nbiot_config.c_str(), err.c_str());
       exit(-1); // a half started cell that silently lacks the requested NB-IoT carrier would be worse than no cell

@@ -211,7 +211,8 @@ NPRACH_PLAN = [
 
 
 def nprach_bursts(ref, nprach, nof_prb, anchor, n_opps, fs):
-    """(bursts, expected) for n_opps opportunities. expected: (tti, n_init, toa, cfo, first stream sample, last)"""
+    """(bursts, expected) for n_opps opportunities. expected: (tti, n_init, toa, cfo, first stream sample, last, TTI
+    since the start of hyper frame 0)"""
     fmt = 1 if nprach['cp_us'] > 100.0 else 0
     offset_hz = (2 * anchor + 1 - nof_prb) * 90000
     ratio = fs // 1920000
@@ -232,7 +233,7 @@ def nprach_bursts(ref, nprach, nof_prb, anchor, n_opps, fs):
             amp = 10.0 ** (snr_db / 20.0)
             y = amp * x * np.exp(2j * np.pi * (mix + cfo * idx / fs))
             bursts.append((base + d, y.astype(np.complex64)))
-            expected.append((tti, n_init, delay, cfo, base, base + d + len(x)))
+            expected.append((tti, n_init, delay, cfo, base, base + d + len(x), t_ms))
     return bursts, expected
 
 
@@ -289,6 +290,12 @@ def make_config_dir(src_dir, nof_prb, earfcn, pci):
     return os.path.join(d, 'enb.conf')
 
 
+def due_preambles(expected, chunks_served, first_detect_margin):
+    """Preambles of opportunities srsenb had received completely, with a margin for the detector thread."""
+    served = chunks_served - first_detect_margin
+    return [e for e in expected if e[5] + 1200 * SF_LEN // 1000 < served * SF_LEN]
+
+
 def check_nprach(console, expected, nprach, chunks_served, first_detect_margin):
     """Every injected preamble that srsenb had time to process must be reported once with the right subframe, preamble
     identifier, arrival time and frequency offset, and nothing else may be reported."""
@@ -302,12 +309,10 @@ def check_nprach(console, expected, nprach, chunks_served, first_detect_margin):
         print('FAIL: srsenb did not report starting the NPRACH receiver')
         ok = False
 
-    # opportunities fully received, with a margin for the detector thread
-    served = chunks_served - first_detect_margin
-    due = [e for e in expected if e[5] + 1200 * SF_LEN // 1000 < served * SF_LEN]
+    due = due_preambles(expected, chunks_served, first_detect_margin)
     matched = set()
     worst_toa = worst_cfo = 0.0
-    for (tti, n_init, delay, cfo, base, end) in due:
+    for (tti, n_init, delay, cfo, base, end, _) in due:
         hits = [i for i, d in enumerate(det) if d['tti'] == tti and d['n_init'] == n_init and i not in matched]
         if not hits:
             print('FAIL: preamble %d at TTI %d (delay %.2f, cfo %+.0f) was not detected' % (n_init, tti, delay, cfo))
@@ -342,6 +347,142 @@ def check_nprach(console, expected, nprach, chunks_served, first_detect_margin):
     return ok
 
 
+# ------------------------------------------------------------------------------ Msg2: what a UE makes of the responses
+def read_responses(console):
+    """What srsenb says it sent: one dict per 'random access response' line of the console."""
+    out = []
+    for m in re.finditer(r'NB-IoT: random access response for preamble (\d+): RA-RNTI (\d+), TC-RNTI 0x([0-9a-f]+), TA (\d+), '
+                         r'NPDCCH (\d+)\.\.(\d+), NPDSCH (\d+)\.\.(\d+) \(window (\d+)\.\.(\d+)\)', console):
+        out.append({'preamble': int(m.group(1)), 'ra_rnti': int(m.group(2)), 'tc': int(m.group(3), 16),
+                    'ta': int(m.group(4)), 'npdcch': (int(m.group(5)), int(m.group(6))),
+                    'npdsch': (int(m.group(7)), int(m.group(8))), 'window': (int(m.group(9)), int(m.group(10)))})
+    return out
+
+
+def check_random_access(console, due, cfg, get_grid, uem, dlch, chk, ch, valid, get_model, msg3_expect):
+    """Every preamble srsenb detected must be answered in the response window, and what a UE model decodes from the
+    captured downlink must be exactly the response the eNB says it sent. The decoded transmissions are entered in the
+    composer model (Model.dyn) so the subframe-by-subframe comparison of the anchor PRB accounts for them and finds
+    anything the eNB sent besides."""
+    ok = True
+    rx = uem.Receiver(chk, cfg['pci'], ch.pos, valid, dlch.model_plan_npdsch)
+    said = read_responses(console)
+    unanswered = re.findall(r'NB-IoT: preamble (\d+) not answered: (.*)', console)
+    for p, why in unanswered:
+        print('FAIL: preamble %s not answered: %s' % (p, why))
+        ok = False
+
+    decoded = {}          # (ra_rnti, npdcch start) -> transmission
+    per_preamble = []
+    for (tti, n_init, delay, cfo, base, end, t_ms) in due:
+        ws = uem.window_first_sf(t_ms, cfg['n_rep'], cfg['fmt'])
+        we = ws + cfg['window_pp'] * uem.ss_period(cfg['r_max'], cfg['g_halves']) - 1
+        rnti = uem.ra_rnti(t_ms)
+        match = None
+        for k0 in uem.ss_starts(cfg['r_max'], cfg['g_halves'], cfg['offset_eighths'], ws, we):
+            key = (rnti, k0)
+            if key not in decoded:
+                dci, ts = rx.decode_npdcch(get_grid, k0, cfg['r_max'], rnti)
+                if dci is None:
+                    decoded[key] = None
+                    continue
+                f = uem.parse_dci_n1(dci)
+                if f is None:
+                    print('FAIL: DCI at %d is not a downlink assignment' % k0)
+                    ok = False
+                    decoded[key] = None
+                    continue
+                n_sf, n_rep = uem.N_SF[f['i_sf']], uem.N_REP[f['i_rep']]
+                k0d = (uem.K0_LO if cfg['r_max'] < 128 else uem.K0_HI)[f['i_delay']]
+                tbs = dlch.TBS[f['i_mcs']][f['i_sf']]
+                tb, plan = rx.decode_npdsch(get_grid, ts[-1], k0d, n_sf, n_rep, tbs, rnti)
+                decoded[key] = {'k0': k0, 'ts': ts, 'dci': dci, 'f': f, 'plan': plan, 'tb': tb, 'rnti': rnti,
+                                'tbs': tbs, 'n_sf': n_sf, 'window': (ws, we)}
+            d = decoded[key]
+            if d is None or d['tb'] is None:
+                continue
+            res = uem.parse_rar_pdu(d['tb'])
+            if res is None:
+                continue
+            for r in res[1]:
+                if r['rapid'] == n_init and match is None:
+                    match = (d, r)
+        if match is None:
+            print('FAIL: no response for preamble %d sent at TTI %d (window %d..%d, RA-RNTI %d)' %
+                  (n_init, t_ms, ws, we, rnti))
+            ok = False
+            continue
+        d, r = match
+        per_preamble.append((n_init, t_ms, d, r))
+        want_ta = max(0, int(math.floor(delay + 0.5)))
+        if abs(r['ta'] - want_ta) > 1:
+            print('FAIL: preamble %d: timing advance %d for a delay of %.2f samples' % (n_init, r['ta'], delay))
+            ok = False
+        if (r['sc15'], r['i_sc'], r['i_delay'], r['i_rep'], r['i_mcs']) != msg3_expect:
+            print('FAIL: preamble %d: Msg3 grant %s, configured %s' %
+                  (n_init, (r['sc15'], r['i_sc'], r['i_delay'], r['i_rep'], r['i_mcs']), msg3_expect))
+            ok = False
+        # DCI subframe repetition number of R = Rmax (TS 36.213 Table 16.6-3)
+        want_dci_rep = {1: 0, 2: 1, 4: 2}.get(cfg['r_max'], 3)
+        if d['f']['i_mcs'] != 4 or d['f']['i_sf'] != 0 or d['f']['dci_rep'] != want_dci_rep:
+            print('FAIL: DCI N1 of the response has unexpected fields %s' % d['f'])
+            ok = False
+        if not (d['window'][0] <= d['k0'] <= d['window'][1]):
+            print('FAIL: NPDCCH at %d is outside the window %s' % (d['k0'], d['window']))
+            ok = False
+
+    # the responses are distinct transmissions with distinct temporary C-RNTIs
+    tcs = [r['tc_rnti'] for _, _, _, r in per_preamble]
+    if len(set(tcs)) != len(tcs):
+        print('FAIL: temporary C-RNTIs repeat: %s' % sorted(tcs))
+        ok = False
+    if any(t < 0x3D or t > 0xFFF3 for t in tcs):
+        print('FAIL: temporary C-RNTI outside the C-RNTI range')
+        ok = False
+
+    # every response line of the console is a transmission the UE decoded, at the times claimed, with the claimed fields
+    n_match = 0
+    for s in said:
+        hit = [d for d in decoded.values() if d is not None and d['rnti'] == s['ra_rnti'] and d['k0'] <= s['npdcch'][0] <= d['ts'][-1]]
+        if not hit:
+            print('FAIL: srsenb says it sent a response %s that the UE model does not find' % s)
+            ok = False
+            continue
+        d = hit[0]
+        res = uem.parse_rar_pdu(d['tb']) if d['tb'] else None
+        times_ok = (d['ts'][0], d['ts'][-1]) == s['npdcch'] and (d['plan'][0][0], d['plan'][-1][0]) == s['npdsch'] \
+            and d['window'] == s['window']
+        content_ok = res is not None and any(r['rapid'] == s['preamble'] and r['ta'] == s['ta'] and r['tc_rnti'] == s['tc']
+                                              for r in res[1])
+        if not (times_ok and content_ok):
+            print('FAIL: srsenb says %s, the UE decoded NPDCCH %d..%d NPDSCH %d..%d window %s, %s' %
+                  (s, d['ts'][0], d['ts'][-1], d['plan'][0][0], d['plan'][-1][0], d['window'], res))
+            ok = False
+        else:
+            n_match += 1
+
+    # the decoded transmissions are what the composer model has to expect in those subframes
+    n_dyn = 0
+    for d in decoded.values():
+        if d is None or d['tb'] is None:
+            continue
+        plan = dlch.model_plan_npdcch(valid, d['k0'], cfg['r_max'])
+        for t, reinit, pos in plan:
+            _, g = ch.npdcch_grid(d['dci'], d['rnti'], reinit, pos)
+            get_model(t // 10240).dyn[t] = (chk.HAS_NPDCCH, g)
+        for t, cw, psfn, psf in d['plan']:
+            _, g = ch.npdsch_grid(d['tb'], d['rnti'], d['n_sf'], cw, psfn, psf)
+            get_model(t // 10240).dyn[t] = (chk.HAS_NPDSCH, g)
+        n_dyn += 1
+    print('random access: %d preambles answered in their window (of %d due), %d responses decoded, %d of the %d '
+          'the eNB reports found on the air with the times and content it reports, %d not answered' %
+          (len(per_preamble), len(due), n_dyn, n_match, len(said), len(unanswered)))
+    if len(per_preamble) < 8:
+        print('FAIL: too few random access responses were exercised (%d)' % len(per_preamble))
+        ok = False
+    return ok
+
+
 def main():
     if len(sys.argv) < 7:
         print(__doc__)
@@ -349,7 +490,10 @@ def main():
     srsenb, enb_conf, nb_conf, sib_pack, seconds = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5])
     for d in sys.argv[6:]:
         sys.path.insert(0, d)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import enb_dl_nbiot_check as chk
+    import nbiot_dlch_check as dlch
+    import nbiot_ra_ue_model as uem
     import nbiot_sched_check as sched_mod
     import nbiot_sync_check as sync
 
@@ -469,9 +613,44 @@ def main():
     t0 = best[1]
     print('alignment: captured subframe %d is TTI %d (mean error %.4f over 40 subframes)' % (first, t0, best[0] / 40))
 
+    # ---- Msg2: decode the responses the way a UE would, and let the composer model expect them
+    lo_, hi_ = lo, hi
+
+    def get_grid(t):
+        i = first + (t - t0)
+        if i < 0 or i >= nsf:
+            return None
+        return grid(i)[:, lo_:hi_]
+
+    ra_cfg = {'pci': pci, 'n_rep': nprach['n_rep'], 'fmt': 1 if nprach['cp_us'] > 100.0 else 0,
+              'window_pp': conf_int(nb, 'ra_response_window'), 'r_max': conf_int(nb, 'npdcch_num_repetitions_ra'),
+              'g_halves': int(round(2 * float(re.search(r'npdcch_start_sf_css_ra\s*=\s*([\d.]+)', nb).group(1)))),
+              'offset_eighths': {'zero': 0, 'oneEighth': 1, 'oneFourth': 2, 'threeEighth': 3}[
+                  re.search(r'npdcch_offset_ra\s*=\s*"(\w+)"', nb).group(1)]}
+    valid = dlch.make_valid(sched_mod, pci, sched, [(1, si_periodicity, si_offset, si_pattern, si_tb, si_window)])
+    chan = dlch.Channels(chk, nof_prb, 0, pci)
+    # Preambles srsenb reported, for which the capture holds the whole response window, or at least the whole response
+    # srsenb says it sent (a response in the first period of a window that ends after the capture still has to be there)
+    seen = {(int(m.group(2)), int(m.group(1))) for m in re.finditer(r'NB-IoT: NPRACH preamble (\d+) at TTI (\d+) ', console)}
+    t_last = t0 + (nsf - first) - 1
+    said = read_responses(console)
+
+    def eligible(e):
+        if (e[0], e[1]) not in seen:
+            return False
+        ws = uem.window_first_sf(e[6], ra_cfg['n_rep'], ra_cfg['fmt'])
+        if ws + ra_cfg['window_pp'] * uem.ss_period(ra_cfg['r_max'], ra_cfg['g_halves']) + 60 < t_last:
+            return True
+        return any(r['preamble'] == e[1] and r['ra_rnti'] == uem.ra_rnti(e[6]) and r['window'][0] == ws and
+                   r['npdsch'][1] < t_last for r in said)
+
+    due = [e for e in expected if eligible(e)]
+    ok_ra = check_random_access(console, due, ra_cfg, get_grid, uem, dlch, chk, chan, valid, get_model,
+                                (1, 6, 0, 0, 0))
+
     worst, gains, nbad = 0.0, [], 0
     kinds = {}
-    names = {1: 'NPSS', 2: 'NSSS', 4: 'NRS', 8: 'NPBCH', 16: 'SIB1-NB', 32: 'SI(SIB2-NB)'}
+    names = {1: 'NPSS', 2: 'NSSS', 4: 'NRS', 8: 'NPBCH', 16: 'SIB1-NB', 32: 'SI(SIB2-NB)', chk.HAS_NPDCCH: 'NPDCCH', chk.HAS_NPDSCH: 'NPDSCH'}
     n = 0
     for i in range(first, nsf):
         tti = t0 + (i - first)
@@ -490,8 +669,8 @@ def main():
     print('anchor PRB compared in %d subframes: worst relative error %.4f, %d above 0.02' % (n, worst, nbad))
     print('gain (scale of the eNB output vs the model): min %.4f max %.4f' % (min(gains), max(gains)))
     print('exercised: ' + ', '.join('%s %d' % (names[k], kinds.get(k, 0)) for k in names))
-    ok = nbad == 0
-    for k in (1, 2, 4, 8, 16, 32):
+    ok = nbad == 0 and ok_ra
+    for k in (1, 2, 4, 8, 16, 32, chk.HAS_NPDCCH, chk.HAS_NPDSCH):
         if kinds.get(k, 0) == 0:
             print('FAIL: no %s subframe in the capture' % names[k])
             ok = False

@@ -23,6 +23,7 @@ set(SOURCES
         lte/nbiot_dl.cc
         lte/sf_worker.cc
         lte/worker_pool.cc
+        nbiot_mac.cc
         nbiot_prach_worker.cc
         nr/slot_worker.cc
         nr/worker_pool.cc

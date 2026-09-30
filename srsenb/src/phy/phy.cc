@@ -21,6 +21,7 @@
 
 #include "srsenb/hdr/phy/phy.h"
 #include "srsenb/hdr/phy/lte/nbiot_dl.h"
+#include "srsenb/hdr/phy/nbiot_mac.h"
 #include "srsenb/hdr/phy/nbiot_prach_worker.h"
 extern "C" {
 #include "srsran/phy/phch/nbiot_ra.h"
@@ -178,6 +179,14 @@ int phy::init_lte(const phy_args_t&            args,
   nof_workers = cfg.phy_cell_cfg.empty() ? 0 : args.nof_phy_threads;
 
   workers_common.params = args;
+  if (not args.nbiot_config.empty()) {
+    // before the workers exist: each downlink worker of the NB-IoT carrier gets this table
+    workers_common.nbiot_sched.reset(srsran_nbiot_dl_sched_new(), srsran_nbiot_dl_sched_free);
+    if (!workers_common.nbiot_sched) {
+      phy_log.error("NB-IoT: cannot allocate the downlink schedule");
+      return SRSRAN_ERROR;
+    }
+  }
 
   workers_common.init(cfg.phy_cell_cfg, cfg.phy_cell_cfg_nr, radio, stack_lte_);
   if (cfg.cfr_config.cfr_enable) {
@@ -240,7 +249,29 @@ int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
     nbiot_prach.reset();
     return SRSRAN_ERROR;
   }
-  nbiot_prach->set_callback([](const nbiot_nprach_detection& d) {
+  // Msg2: the random access response goes out through the downlink composers
+  nbiot_ra_config ra_cfg;
+  if (not nbiot_ra_config::from_cell(nb_cfg, ra_cfg, err)) {
+    phy_log.error("NB-IoT random access: %s", err.c_str());
+    srsran::console("NB-IoT random access: %s\n", err.c_str());
+    return SRSRAN_ERROR;
+  }
+  srsran_nbiot_cell_t nb_cell = {};
+  nb_cell.base                = cfg.phy_cell_cfg[0].cell;
+  nb_cell.nbiot_prb           = nb_cfg.nbiot_prb;
+  nb_cell.n_id_ncell          = nb_cfg.n_id_ncell;
+  nb_cell.nof_ports           = nb_cfg.nof_ports;
+  nb_cell.is_r14              = true;
+  nb_cell.mode                = nb_cfg.mode;
+  nbiot_ra.reset(new nbiot_mac(phy_log));
+  if (not nbiot_ra->init(ra_cfg, nb_cell, workers_common.nbiot_sched.get(), err)) {
+    phy_log.error("NB-IoT random access: %s", err.c_str());
+    srsran::console("NB-IoT random access: %s\n", err.c_str());
+    nbiot_ra.reset();
+    return SRSRAN_ERROR;
+  }
+  nbiot_mac* ra = nbiot_ra.get();
+  nbiot_prach->set_callback([ra](const nbiot_nprach_detection& d) {
     srsran::console("NB-IoT: NPRACH preamble %u at TTI %u (frame %u), ToA %.2f samples = %.1f us (timing advance %u), "
                     "CFO %+.0f Hz, metric %.0f\n",
                     d.n_init,
@@ -251,6 +282,7 @@ int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
                     srsran_nbiot_ta_from_toa(d.toa),
                     d.cfo_hz,
                     d.metric);
+    ra->preamble_detected(d);
   });
   tx_rx.set_nbiot_prach(nbiot_prach.get());
   srsran::console("NB-IoT: listening for NPRACH (period %u ms, start %u ms, %u subcarriers, %u repetitions)\n",

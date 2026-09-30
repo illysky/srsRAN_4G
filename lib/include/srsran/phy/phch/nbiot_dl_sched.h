@@ -178,6 +178,13 @@ SRSRAN_API bool srsran_nbiot_dl_sched_get(srsran_nbiot_dl_sched_t* s, uint64_t t
 /// The latest subframe the composer has asked about (0 until it did)
 SRSRAN_API uint64_t srsran_nbiot_dl_sched_now(srsran_nbiot_dl_sched_t* s);
 
+/**
+ * What the cell broadcasts where, for the MAC, which plans around it. The composer publishes it once it has built the
+ * system information (all composers of a cell arrive at the same one); get_layout returns false until then.
+ */
+SRSRAN_API void srsran_nbiot_dl_sched_set_layout(srsran_nbiot_dl_sched_t* s, const srsran_nbiot_layout_t* l);
+SRSRAN_API bool srsran_nbiot_dl_sched_get_layout(srsran_nbiot_dl_sched_t* s, srsran_nbiot_layout_t* l);
+
 /// True if subframe t already carries a transmission
 SRSRAN_API bool srsran_nbiot_dl_sched_busy(srsran_nbiot_dl_sched_t* s, uint64_t t);
 

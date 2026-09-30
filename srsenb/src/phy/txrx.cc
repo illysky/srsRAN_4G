@@ -144,7 +144,8 @@ void txrx::run_thread()
   // Main loop
   while (running) {
     tti = TTI_ADD(tti, 1);
-    const uint32_t hfn_tx = (uint32_t)((tx_count / (SRSRAN_NOF_SF_X_FRAME * 1024UL)) % 1024UL);
+    // Not wrapped at 1024: the NB-IoT scheduling table keys on the absolute subframe, which must never go backwards.
+    const uint32_t hfn_tx = (uint32_t)(tx_count / (SRSRAN_NOF_SF_X_FRAME * 1024UL));
     tx_count++;
     logger.set_context(tti);
 

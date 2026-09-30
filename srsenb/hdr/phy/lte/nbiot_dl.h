@@ -41,8 +41,8 @@ namespace lte {
  * nbiot::cell_config file, so what is broadcast is what is transmitted. The broadcast content is static except for the
  * hyper-SFN most significant bits inside SIB1-NB, which is repacked when they change.
  *
- * One instance per cc_worker. The composer is a pure function of (H-SFN, SFN, subframe), so the workers that build
- * consecutive subframes in parallel need no shared state.
+ * One instance per cc_worker. The composer is a pure function of (H-SFN, SFN, subframe) and of the table of planned
+ * transmissions, so the workers that build consecutive subframes in parallel share nothing but that table.
  */
 class nbiot_dl
 {
@@ -53,7 +53,11 @@ public:
   nbiot_dl& operator=(const nbiot_dl&) = delete;
 
   /// Reads the NB-IoT carrier description and checks it against the LTE cell it is embedded in
-  bool init(const std::string& config_file, const srsran_cell_t& lte_cell, srslog::basic_logger& logger, std::string& err);
+  bool init(const std::string&    config_file,
+            const srsran_cell_t&  lte_cell,
+            srslog::basic_logger& logger,
+            std::string&          err,
+            srsran_nbiot_dl_sched_t* sched = nullptr);
 
   /// Reads and validates the file without allocating a composer
   static bool load(const std::string& config_file, nbiot::cell_config& cfg, std::string& err);
@@ -62,7 +66,7 @@ public:
   static bool check_host(const nbiot::cell_config& cfg, const srsran_cell_t& lte_cell, std::string& err);
 
   /// Puts the NB-IoT anchor PRB of the subframe with the given (transmit) TTI into the LTE grids.
-  /// hfn is the hyper frame number (incremented every 1024 radio frames). Returns false on an internal error.
+  /// hfn counts hyper frames since start, unwrapped; only its 10 LSBs go on the air. Returns false on an internal error.
   bool put_sf(uint32_t hfn, uint32_t tti, cf_t* sf_symbols[SRSRAN_MAX_PORTS]);
 
   const nbiot::cell_config& cell() const { return cfg; }
@@ -74,6 +78,10 @@ private:
   bool                  initiated = false;
 
   srslog::basic_logger* logger = nullptr;
+
+  // Transmissions the MAC has planned (NPDCCH, addressed NPDSCH), shared by all composers of the cell. May be null.
+  srsran_nbiot_dl_sched_t* sched            = nullptr;
+  bool                     layout_published = false;
 
   // H-SFN MSBs the current SIB1-NB payload was packed for (-1: none yet)
   int32_t  sib1_msb         = -1;

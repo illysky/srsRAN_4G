@@ -69,12 +69,14 @@ bool nbiot_dl::check_host(const nbiot::cell_config& c, const srsran_cell_t& lte_
   return true;
 }
 
-bool nbiot_dl::init(const std::string&    config_file,
-                    const srsran_cell_t&  lte_cell,
-                    srslog::basic_logger& logger_,
-                    std::string&          err)
+bool nbiot_dl::init(const std::string&       config_file,
+                    const srsran_cell_t&     lte_cell,
+                    srslog::basic_logger&    logger_,
+                    std::string&             err,
+                    srsran_nbiot_dl_sched_t* sched_)
 {
   logger = &logger_;
+  sched  = sched_;
 
   if (!load(config_file, cfg, err)) {
     return false;
@@ -97,6 +99,7 @@ bool nbiot_dl::init(const std::string&    config_file,
     return false;
   }
   initiated = true;
+  srsran_enb_dl_nbiot_set_sched(&comp, sched);
 
   srsran_mib_nb_t mib = nbiot::to_c_mib(cfg);
   if (srsran_enb_dl_nbiot_set_mib(&comp, &mib) != SRSRAN_SUCCESS) {
@@ -159,7 +162,16 @@ bool nbiot_dl::put_sf(uint32_t hfn, uint32_t tti, cf_t* sf_symbols[SRSRAN_MAX_PO
     sib1_msb = msb;
   }
 
-  const int r = srsran_enb_dl_nbiot_put_sf(&comp, hfn & 0x3FF, tti / 10, tti % 10, sf_symbols);
+  // The MAC plans around the broadcast subframes: hand it the layout once the system information is complete
+  if (sched != nullptr && !layout_published) {
+    srsran_nbiot_layout_t layout = {};
+    if (srsran_enb_dl_nbiot_get_layout(&comp, &layout) == SRSRAN_SUCCESS && layout.sib1_set) {
+      srsran_nbiot_dl_sched_set_layout(sched, &layout);
+      layout_published = true;
+    }
+  }
+
+  const int r = srsran_enb_dl_nbiot_put_sf(&comp, hfn, tti / 10, tti % 10, sf_symbols);
   if (r < 0) {
     logger->error("NB-IoT: composing subframe failed (tti=%u)", tti);
     return false;

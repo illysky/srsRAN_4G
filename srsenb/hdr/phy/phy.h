@@ -37,6 +37,7 @@
 namespace srsenb {
 
 class nbiot_prach_worker;
+class nbiot_mac;
 
 class phy final : public enb_phy_base,
                   public phy_interface_stack_lte,
@@ -108,6 +109,7 @@ private:
   phy_common                       workers_common;
   prach_worker_pool                prach;
   std::unique_ptr<nbiot_prach_worker> nbiot_prach;
+  std::unique_ptr<nbiot_mac>          nbiot_ra; // answers what nbiot_prach detects
   txrx                             tx_rx;
 
   bool initialized = false;
