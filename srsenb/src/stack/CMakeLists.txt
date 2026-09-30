@@ -23,6 +23,6 @@ add_subdirectory(rrc)
 add_subdirectory(s1ap)
 add_subdirectory(upper)
 
-set(SOURCES enb_stack_lte.cc)
+set(SOURCES enb_stack_lte.cc rrc_nbiot.cc)
 
 add_library(srsenb_stack STATIC ${SOURCES})

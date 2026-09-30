@@ -39,6 +39,7 @@ namespace srsenb {
 class nbiot_prach_worker;
 class nbiot_msg3_worker;
 class nbiot_mac;
+class nbiot_mac_interface_rrc;
 
 class phy final : public enb_phy_base,
                   public phy_interface_stack_lte,
@@ -63,6 +64,9 @@ public:
   void stop() override;
 
   std::string get_type() override { return "lte"; };
+
+  /// The NB-IoT MAC of the in-band anchor, or null without one
+  nbiot_mac_interface_rrc* get_nbiot_mac();
 
   /* MAC->PHY interface */
   void rem_rnti(uint16_t rnti) final;

@@ -156,6 +156,8 @@ int enb::init(const all_args_t& args_)
     if (tmp_phy->init(args.phy, phy_cfg, tmp_radio.get(), tmp_eutra_stack.get(), *tmp_nr_stack, this)) {
       srsran::console("Error initializing PHY.\n");
       ret = SRSRAN_ERROR;
+    } else if (tmp_eutra_stack != nullptr && tmp_phy->get_nbiot_mac() != nullptr) {
+      tmp_eutra_stack->set_nbiot_mac(tmp_phy->get_nbiot_mac());
     }
   }
 

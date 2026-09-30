@@ -46,6 +46,7 @@ struct nbiot_npusch_expect {
   srsran_npusch_cfg_t cfg      = {}; ///< frame / slot of the first slot included
   uint16_t            rnti     = 0;
   uint32_t            preamble = 0; ///< for the log: the random access attempt this belongs to
+  bool                connected = false; ///< a grant to a connected UE rather than Msg3
 };
 
 /// What came of it.

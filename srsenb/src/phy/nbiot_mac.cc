@@ -43,6 +43,11 @@ bool nbiot_ra_config::from_cell(const nbiot::cell_config& cell, nbiot_ra_config&
   out.r_max         = cell.sib2.npdcch_num_repetitions_ra;
   out.window_pp     = cell.sib2.ra_response_window;
   out.contention_pp = cell.sib2.mac_contention_timer;
+  out.nprach_period_ms = cell.sib2.nprach_periodicity_ms;
+  out.nprach_start_ms  = cell.sib2.nprach_start_time_ms;
+  out.cell_id          = cell.n_id_ncell;
+  out.group_hopping    = cell.sib2.group_hopping_enabled;
+  out.delta_ss         = cell.sib2.group_assignment_npusch;
 
   const double g = cell.sib2.npdcch_start_sf_css_ra;
   out.g_halves   = (uint32_t)std::lround(2.0 * g);
@@ -148,7 +153,7 @@ uint16_t nbiot_mac::alloc_tc_rnti()
 {
   // 0x003D..0xFFF3 are C-RNTIs (TS 36.321 Table 7.1-1); stay clear of the RA-RNTIs, which are at most 0x100 + 0x100
   const uint16_t r = next_tc_rnti;
-  next_tc_rnti     = next_tc_rnti >= 0xFFF0 ? 0x0200 : (uint16_t)(next_tc_rnti + 1);
+  next_tc_rnti     = next_tc_rnti >= NBIOT_LAST_RNTI ? NBIOT_FIRST_RNTI : (uint16_t)(next_tc_rnti + 1);
   return r;
 }
 
@@ -399,14 +404,16 @@ int pack_rrc_conn_setup_nb(uint8_t* out, uint32_t max)
 
 } // namespace
 
-bool nbiot_mac::plan_css_dl(uint16_t                     rnti,
-                            const srsran_nbiot_dci_n1_t& dci,
-                            const uint8_t*               pdu,
-                            uint32_t                     tbs,
-                            uint64_t                     t_min,
-                            uint64_t                     t_max,
-                            dl_alloc&                    out,
-                            std::string&                 why)
+bool nbiot_mac::plan_dl(const search_space&          ss,
+                        uint16_t                     rnti,
+                        const srsran_nbiot_dci_n1_t& dci,
+                        const uint8_t*               pdu,
+                        uint32_t                     tbs,
+                        uint64_t                     t_min,
+                        uint64_t                     t_max,
+                        bool                         with_ack,
+                        dl_alloc&                    out,
+                        std::string&                 why)
 {
   const uint64_t        now = srsran_nbiot_dl_sched_now(sched);
   srsran_nbiot_layout_t layout;
@@ -422,7 +429,7 @@ bool nbiot_mac::plan_css_dl(uint16_t                     rnti,
   }
   const uint32_t n_sf  = srsran_nbiot_npdsch_n_sf(dci.i_sf);
   const uint32_t n_rep = srsran_nbiot_npdsch_n_rep(dci.i_rep);
-  const int      k0d   = srsran_nbiot_npdsch_k0(dci.i_delay, cfg.r_max);
+  const int      k0d   = srsran_nbiot_npdsch_k0(dci.i_delay, ss.r_max);
   if (n_sf == 0 || n_rep == 0 || k0d < 0 || srsran_nbiot_npdsch_tbs(dci.i_mcs, dci.i_sf) != tbs) {
     why = "internal: NPDSCH parameters";
     return false;
@@ -431,36 +438,19 @@ bool nbiot_mac::plan_css_dl(uint16_t                     rnti,
   const uint64_t min_t = now + cfg.lead_sf;
   t_min                = std::max(t_min, min_t);
 
-  uint32_t            period = 0;
   srsran_nbiot_plan_t pc, pd;
-  bool                found = false;
-  while (true) {
-    const uint64_t k0 = srsran_nbiot_search_space_start(cfg.r_max, cfg.g_halves, cfg.offset_eighths, t_min, &period);
-    if (k0 > t_max) {
-      break;
-    }
-    if (srsran_nbiot_plan_npdcch(&layout, k0, cfg.r_max, &pc) != SRSRAN_SUCCESS ||
-        srsran_nbiot_plan_npdsch(&layout, pc.t[pc.nof_sf - 1], (uint32_t)k0d, n_sf, n_rep, &pd) != SRSRAN_SUCCESS) {
-      why = "cannot plan the transmission";
-      return false;
-    }
-    bool free_sf = true;
-    for (uint32_t i = 0; i < pc.nof_sf && free_sf; i++) {
-      free_sf = pc.t[i] >= min_t && !srsran_nbiot_dl_sched_busy(sched, pc.t[i]);
-    }
-    for (uint32_t i = 0; i < pd.nof_sf && free_sf; i++) {
-      free_sf = !srsran_nbiot_dl_sched_busy(sched, pd.t[i]);
-    }
-    if (free_sf) {
-      found = true;
-      break;
-    }
-    t_min = k0 + 1;
-  }
-  if (!found) {
+  auto                ack_clear = [this, with_ack](const srsran_nbiot_plan_t&, const srsran_nbiot_plan_t& d) {
+    const uint64_t n = d.t[d.nof_sf - 1];
+    return !with_ack || !overlaps_nprach(n + HARQ_ACK_K0, n + HARQ_ACK_K0 + HARQ_ACK_SF - 1);
+  };
+  if (!find_candidate(ss, t_min, t_max, (uint32_t)k0d, n_sf, n_rep, ack_clear, pc, pd)) {
     cnt.late++;
     why = "no search space start left in [" + std::to_string(t_min) + ", " + std::to_string(t_max) + "] (now " +
           std::to_string(now) + ")";
+    return false;
+  }
+  if (pd.nof_sf != n_sf * n_rep) {
+    why = "internal: NPDSCH plan";
     return false;
   }
 
@@ -567,10 +557,17 @@ bool nbiot_mac::send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_l
   srsran_nbiot_search_space_start(cfg.r_max, cfg.g_halves, cfg.offset_eighths, 0, &period);
   const uint64_t now = srsran_nbiot_dl_sched_now(sched);
   dl_alloc       a;
-  if (!plan_css_dl(tc_rnti, dci, pdu, tbs, now, now + (uint64_t)cfg.contention_pp * period / 2, a, why)) {
+  if (!plan_dl(css(), tc_rnti, dci, pdu, tbs, now, now + (uint64_t)cfg.contention_pp * period / 2, true, a, why)) {
     return false;
   }
   cnt.msg4++;
+
+  // From here on the UE is in RRC_CONNECTED with the TC-RNTI as its C-RNTI (once it has acknowledged)
+  ue_ctx& ue    = ues[tc_rnti];
+  ue            = ue_ctx{};
+  ue.rnti       = tc_rnti;
+  ue.busy_until = a.npdsch_end + HARQ_ACK_K0 + HARQ_ACK_SF + UE_GAP_SF;
+  ue.last_rx    = now;
   srsran::console("NB-IoT: Msg4 to TC-RNTI 0x%04x: RRCConnectionSetup-NB %d bytes, TBS %u (I_TBS %d, I_SF %d), "
                   "NPDCCH %llu..%llu, NPDSCH %llu..%llu: %s\n",
                   tc_rnti,
@@ -595,75 +592,83 @@ void nbiot_mac::msg3_received(uint16_t tc_rnti, const uint8_t* pdu, uint32_t len
 {
   srsran::console("NB-IoT: Msg3 from TC-RNTI 0x%04x: %s\n", tc_rnti, hex(pdu, len).c_str());
 
-  // UL-SCH subheaders R/F2/E/LCID [F/L(7) | F/L(15) | L(16)] (TS 36.321 6.1.2); the last one has no length
-  uint32_t pos = 0;
-  struct sub {
-    uint32_t lcid, len;
-    bool     last;
-  };
-  std::vector<sub> subs;
-  while (pos < len) {
-    const uint8_t h    = pdu[pos++];
-    const bool    f2   = (h >> 6) & 1;
-    const bool    more = (h >> 5) & 1;
-    sub           s    = {h & 0x1fu, 0, !more};
-    if (more) {
-      if (pos >= len) {
-        srsran::console("NB-IoT: Msg3 header runs past the PDU\n");
-        return;
-      }
-      if (f2) {
-        s.len = ((uint32_t)pdu[pos] << 8) | pdu[pos + 1];
-        pos += 2;
-      } else if (pdu[pos] & 0x80) {
-        s.len = (((uint32_t)pdu[pos] & 0x7f) << 8) | pdu[pos + 1];
-        pos += 2;
-      } else {
-        s.len = pdu[pos++];
+  uint16_t            crnti = 0;
+  int                 bsr   = -1;
+  std::vector<ul_sdu> sdus;
+  std::string         why;
+  if (!parse_ul_pdu(pdu, len, &crnti, &bsr, sdus, why)) {
+    srsran::console("NB-IoT: Msg3 of TC-RNTI 0x%04x: %s\n", tc_rnti, why.c_str());
+    return;
+  }
+
+  if (crnti != 0) {
+    // A connected UE that had data and no grant: its C-RNTI replaces the temporary one, and contention is resolved by
+    // an uplink grant to the C-RNTI (36.321 5.1.5)
+    bool known = false;
+    {
+      std::lock_guard<std::mutex> guard(lock);
+      auto                        it = ues.find(crnti);
+      if (it != ues.end()) {
+        known                  = true;
+        ue_ctx& ue             = it->second;
+        ue.contention          = true;
+        ue.ul_retx             = false;
+        ue.ul_inflight         = false;
+        ue.last_rx             = srsran_nbiot_dl_sched_now(sched);
+        ue.busy_until          = std::max(ue.busy_until, ue.last_rx);
+        if (bsr >= 0) {
+          ue.bsr_bytes = (uint32_t)bsr;
+        }
       }
     }
-    subs.push_back(s);
-    if (s.last) {
+    srsran::console("NB-IoT: Msg3 carries C-RNTI 0x%04x (%s), BSR %d bytes, %zu SDUs\n",
+                    crnti,
+                    known ? "connected" : "unknown",
+                    bsr,
+                    sdus.size());
+    nbiot_rrc_interface_mac* r = rrc.load();
+    if (known && r != nullptr) {
+      for (const ul_sdu& s : sdus) {
+        r->write_pdu(crnti, s.lcid, s.data.data(), (uint32_t)s.data.size());
+      }
+    }
+    return;
+  }
+
+  for (const ul_sdu& s : sdus) {
+    if (s.lcid != 0) {
+      srsran::console("NB-IoT: Msg3 LCID %u, %zu bytes: %s\n", s.lcid, s.data.size(), hex(s.data.data(), s.data.size()).c_str());
+      continue;
+    }
+    // The DPR MAC control element sits in front of the CCCH SDU, under the same subheader (36.321 6.1.3.10).
+    // PER decodes almost anything, so the offset with the DPR is tried first.
+    const uint32_t n       = (uint32_t)s.data.size();
+    bool           decoded = false;
+    for (uint32_t skip : {1u, 0u}) {
+      if (skip >= n) {
+        continue;
+      }
+      std::string js = decode_ul_ccch_nb(s.data.data() + skip, n - skip);
+      if (js.empty()) {
+        continue;
+      }
+      if (skip) {
+        const uint8_t dpr = s.data[0];
+        srsran::console("NB-IoT: Msg3 DPR: PH %u, DV index %u\n", (dpr >> 4) & 3u, dpr & 0xfu);
+      }
+      srsran::console("NB-IoT: Msg3 CCCH SDU (%u bytes): %s\n", n - skip, js.c_str());
+      logger.info("NB-IoT Msg3 TC-RNTI 0x%04x CCCH: %s", tc_rnti, js.c_str());
+      decoded = true;
+      if (!send_msg4(tc_rnti, s.data.data() + skip, n - skip, why)) {
+        srsran::console("NB-IoT: no Msg4 for TC-RNTI 0x%04x: %s\n", tc_rnti, why.c_str());
+      } else if (nbiot_rrc_interface_mac* r = rrc.load()) {
+        r->ue_connected(tc_rnti);
+      }
       break;
     }
-  }
-  for (const sub& s : subs) {
-    uint32_t n = s.last ? len - pos : s.len;
-    if (pos + n > len) {
-      srsran::console("NB-IoT: Msg3 subheader LCID %u length %u runs past the PDU\n", s.lcid, n);
-      return;
+    if (not decoded) {
+      srsran::console("NB-IoT: Msg3 CCCH SDU does not decode as UL-CCCH-Message-NB\n");
     }
-    if (s.lcid == 0) {
-      // The DPR MAC control element sits in front of the CCCH SDU, under the same subheader (36.321 6.1.3.10).
-      // PER decodes almost anything, so the offset with the DPR is tried first.
-      bool decoded = false;
-      for (uint32_t skip : {1u, 0u}) {
-        if (skip >= n) {
-          continue;
-        }
-        std::string js = decode_ul_ccch_nb(pdu + pos + skip, n - skip);
-        if (not js.empty()) {
-          if (skip) {
-            const uint8_t dpr = pdu[pos];
-            srsran::console("NB-IoT: Msg3 DPR: PH %u, DV index %u\n", (dpr >> 4) & 3u, dpr & 0xfu);
-          }
-          srsran::console("NB-IoT: Msg3 CCCH SDU (%u bytes): %s\n", n - skip, js.c_str());
-          logger.info("NB-IoT Msg3 TC-RNTI 0x%04x CCCH: %s", tc_rnti, js.c_str());
-          decoded = true;
-          std::string why;
-          if (!send_msg4(tc_rnti, pdu + pos + skip, n - skip, why)) {
-            srsran::console("NB-IoT: no Msg4 for TC-RNTI 0x%04x: %s\n", tc_rnti, why.c_str());
-          }
-          break;
-        }
-      }
-      if (not decoded) {
-        srsran::console("NB-IoT: Msg3 CCCH SDU does not decode as UL-CCCH-Message-NB\n");
-      }
-    } else if (s.lcid != 31) {
-      srsran::console("NB-IoT: Msg3 LCID %u, %u bytes: %s\n", s.lcid, n, hex(pdu + pos, n).c_str());
-    }
-    pos += n;
   }
 }
 

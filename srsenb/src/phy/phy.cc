@@ -223,6 +223,11 @@ int phy::init_lte(const phy_args_t&            args,
   return SRSRAN_SUCCESS;
 }
 
+nbiot_mac_interface_rrc* phy::get_nbiot_mac()
+{
+  return nbiot_ra.get();
+}
+
 int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
 {
   nbiot::cell_config nb_cfg;
@@ -320,7 +325,13 @@ int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
       srsran::console("NB-IoT: Msg3 of TC-RNTI 0x%04x not expected: %s\n", r.tc_rnti, why.c_str());
     }
   });
+  ra->set_npusch_request(
+      [m3](const nbiot_npusch_expect& e, std::string& why) -> bool { return m3->expect(e, why); });
   nbiot_msg3->set_callback([ra](const nbiot_npusch_result& res) {
+    if (res.req.connected) {
+      ra->npusch_received(res);
+      return;
+    }
     srsran::console("NB-IoT: Msg3 of TC-RNTI 0x%04x (preamble %u, subframe %llu, %u RU x %u): CRC %s, SNR %.1f dB, "
                     "CFO %+.0f Hz\n",
                     res.req.rnti,
@@ -336,6 +347,7 @@ int phy::init_nbiot_prach(const phy_args_t& args, const phy_cfg_t& cfg)
     }
   });
   tx_rx.set_nbiot_msg3(nbiot_msg3.get());
+  tx_rx.set_nbiot_mac(ra);
   srsran::console("NB-IoT: listening for NPRACH (period %u ms, start %u ms, %u subcarriers, %u repetitions)\n",
                   p.periodicity_ms,
                   p.start_time_ms,

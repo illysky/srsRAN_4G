@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "srsenb/hdr/phy/txrx.h"
+#include "srsenb/hdr/phy/nbiot_mac.h"
 #include "srsenb/hdr/phy/nbiot_msg3_worker.h"
 #include "srsenb/hdr/phy/nbiot_prach_worker.h"
 #include "srsran/common/band_helper.h"
@@ -221,6 +222,9 @@ void txrx::run_thread()
     }
     if (nbiot_msg3 != nullptr) {
       nbiot_msg3->new_tti(tti, buffer.get(worker_com->get_rf_port(0), 0, worker_com->get_nof_ports(0)));
+    }
+    if (nbiot_mac_ != nullptr) {
+      nbiot_mac_->tick();
     }
 
     // Set NR worker context and start

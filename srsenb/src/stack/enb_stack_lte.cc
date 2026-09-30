@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/stack/enb_stack_lte.h"
+#include "srsenb/hdr/stack/rrc_nbiot.h"
 #include "srsenb/hdr/common/rnti_pool.h"
 #include "srsenb/hdr/enb.h"
 #include "srsenb/hdr/stack/upper/gtpu_pdcp_adapter.h"
@@ -127,6 +128,8 @@ int enb_stack_lte::init(const stack_args_t&      args_,
 
   // setup bearer managers
   gtpu_adapter.reset(new gtpu_pdcp_adapter(stack_logger, &pdcp, x2_, &gtpu, bearers));
+  nbiot_rrc.reset(new rrc_nbiot(&task_sched, rrc_logger, rlc_logger, pdcp_logger));
+  s1ap_mux.reset(new rrc_s1ap_mux(&rrc, nbiot_rrc.get()));
 
   // Init all LTE layers
   if (!mac.init(args.mac, rrc_cfg.cell_list, phy, &rlc, &rrc)) {
@@ -139,7 +142,9 @@ int enb_stack_lte::init(const stack_args_t&      args_,
     stack_logger.error("Couldn't initialize RRC");
     return SRSRAN_ERROR;
   }
-  if (s1ap.init(args.s1ap, &rrc) != SRSRAN_SUCCESS) {
+  nbiot_rrc->init(rrc_cfg, &s1ap, &gtpu, gtpu_adapter.get(), &bearers, task_sched.get_timer_handler());
+  gtpu_adapter->set_nbiot_pdcp(nbiot_rrc->get_pdcp_gtpu());
+  if (s1ap.init(args.s1ap, s1ap_mux.get()) != SRSRAN_SUCCESS) {
     stack_logger.error("Couldn't initialize S1AP");
     return SRSRAN_ERROR;
   }
@@ -175,6 +180,11 @@ void enb_stack_lte::tti_clock_impl()
   rrc.tti_clock();
 }
 
+void enb_stack_lte::set_nbiot_mac(nbiot_mac_interface_rrc* nb_mac)
+{
+  enb_task_queue.push([this, nb_mac]() { nbiot_rrc->set_mac(nb_mac); });
+}
+
 void enb_stack_lte::stop()
 {
   if (started) {
@@ -189,6 +199,7 @@ void enb_stack_lte::stop_impl()
 
   s1ap.stop();
   gtpu.stop();
+  nbiot_rrc->stop();
   mac.stop();
   rlc.stop();
   pdcp.stop();

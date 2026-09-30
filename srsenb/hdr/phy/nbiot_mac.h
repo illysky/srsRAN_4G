@@ -29,7 +29,11 @@
 #include <vector>
 
 #include "nbiot_sib_builder.h"
+#include "srsenb/hdr/phy/nbiot_msg3_worker.h"
 #include "srsenb/hdr/phy/nbiot_prach_worker.h"
+#include "srsran/interfaces/enb_nbiot_interfaces.h"
+#include <atomic>
+#include <map>
 #include "srsran/srslog/srslog.h"
 extern "C" {
 #include "srsran/phy/phch/nbiot_dl_sched.h"
@@ -58,6 +62,15 @@ struct nbiot_ra_config {
   uint32_t offset_eighths = 0; ///< npdcch-Offset-RA: 0, 1, 2, 3 eighths
   uint32_t window_pp      = 0; ///< ra-ResponseWindowSize in search-space periods
   uint32_t contention_pp  = 0; ///< mac-ContentionResolutionTimer in search-space periods
+
+  // NPRACH occasions, which NPUSCH of connected UEs stays clear of
+  uint32_t nprach_period_ms = 0;
+  uint32_t nprach_start_ms  = 0;
+
+  // NPUSCH of the cell
+  uint32_t cell_id       = 0;
+  bool     group_hopping = false;
+  uint32_t delta_ss      = 0;
 
   // What the response contains
   uint32_t                  rar_i_rep = 2;                ///< repetitions of the RAR NPDSCH: Table 16.4.1.3-2 index
@@ -89,7 +102,7 @@ struct nbiot_ra_response {
   uint32_t pdu_len = 0;
 };
 
-class nbiot_mac
+class nbiot_mac : public nbiot_mac_interface_rrc
 {
 public:
   explicit nbiot_mac(srslog::basic_logger& logger);
@@ -119,6 +132,21 @@ public:
   /// Responses whose Msg3 has not been dealt with yet
   std::vector<nbiot_ra_response> pending() const;
 
+  // Connected UEs (TS 36.321 5.3, 5.4; 36.213 16.4, 16.5, 16.6)
+
+  /// Registers an NPUSCH format 1 reception; false if the receiver cannot take it
+  using npusch_request = std::function<bool(const nbiot_npusch_expect&, std::string&)>;
+  void set_npusch_request(npusch_request f) { request_npusch = std::move(f); }
+
+  void set_rrc(nbiot_rrc_interface_mac* rrc_) override { rrc = rrc_; }
+  void release_ue(uint16_t rnti) override;
+
+  /// Schedules the connected UEs; call once per subframe (txrx thread)
+  void tick();
+
+  /// The NPUSCH format 1 of a connected UE (expect.connected) came in
+  void npusch_received(const nbiot_npusch_result& r);
+
   struct counters {
     uint64_t preambles = 0, answered = 0, late = 0, no_room = 0, no_layout = 0, msg4 = 0;
   };
@@ -138,10 +166,36 @@ private:
   bool                     initiated = false;
 
   response_callback              on_response;
+  npusch_request                 request_npusch;
+  std::atomic<nbiot_rrc_interface_mac*> rrc{nullptr};
   mutable std::mutex             lock;
-  uint16_t                       next_tc_rnti = 0x0200;
+  uint16_t                       next_tc_rnti = NBIOT_FIRST_RNTI;
   std::vector<nbiot_ra_response> answered;
   counters                       cnt;
+
+  /// A search space: Rmax, G in halves, offset in eighths of the period
+  struct search_space {
+    uint32_t r_max, g_halves, offset_eighths;
+  };
+  search_space css() const { return {cfg.r_max, cfg.g_halves, cfg.offset_eighths}; }
+
+  struct ue_ctx {
+    uint16_t rnti = 0;
+    uint64_t busy_until = 0;      ///< first subframe a new NPDCCH to the UE may start in
+    uint64_t last_rx    = 0;      ///< last subframe an uplink transport block of the UE decoded
+    uint64_t last_grant = 0;
+    bool     ul_inflight = false; ///< waiting for the decoder
+    uint64_t ul_deadline = 0;
+    bool     ul_retx     = false; ///< next grant retransmits the last transport block (NDI not toggled)
+    uint32_t ul_fails    = 0;
+    uint32_t ul_ndi = 0, dl_ndi = 0;
+    uint32_t ul_n_sc   = 12;
+    srsran_nbiot_dci_n0_t last_n0 = {};
+    uint32_t last_tbs  = 0;
+    uint32_t bsr_bytes = 0;      ///< what the UE reported it still has
+    bool     contention = false; ///< random access with its C-RNTI: the next grant goes in the Type-2 CSS
+  };
+  std::map<uint16_t, ue_ctx> ues;
 
   uint16_t alloc_tc_rnti();
 
@@ -150,18 +204,56 @@ private:
     uint64_t npdcch_start = 0, npdcch_end = 0, npdsch_start = 0, npdsch_end = 0;
   };
 
+  /// True if subframes [a, b] of the uplink overlap an NPRACH occasion
+  bool overlaps_nprach(uint64_t a, uint64_t b) const;
+
+  /// First NPDCCH candidate of ss starting in [t_min, t_max] whose subframes are free (and the NPDSCH after it with
+  /// k0d, n_sf, if n_sf > 0), and whose acknowledgement / uplink window check(pc, pd) accepts. Caller holds the lock.
+  bool find_candidate(const search_space&                                                        ss,
+                      uint64_t                                                                   t_min,
+                      uint64_t                                                                   t_max,
+                      uint32_t                                                                   k0d,
+                      uint32_t                                                                   n_sf,
+                      uint32_t                                                                   n_rep,
+                      const std::function<bool(const srsran_nbiot_plan_t&, const srsran_nbiot_plan_t&)>& check,
+                      srsran_nbiot_plan_t&                                                       pc,
+                      srsran_nbiot_plan_t&                                                       pd);
+
+  bool schedule_dl(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log);
+  bool schedule_ul(ue_ctx& ue, uint64_t t_min, std::vector<std::string>& log);
+
+  /// Uplink MAC PDU of a connected UE: control elements update ue, SDUs are returned
+  struct ul_sdu {
+    uint32_t             lcid;
+    std::vector<uint8_t> data;
+  };
+  bool parse_ul_pdu(const uint8_t* pdu, uint32_t len, uint16_t* crnti, int* bsr_bytes, std::vector<ul_sdu>& sdus,
+                    std::string& why);
+
+  /// HARQ-ACK of an NPDSCH (resource 0 of Table 16.4.2-1, 15 kHz): NPUSCH format 2 from n + 13, one RU of 2 ms
+  static constexpr uint32_t HARQ_ACK_K0 = 13;
+  static constexpr uint32_t HARQ_ACK_SF = 2;
+  /// Subframes a UE needs after an uplink transmission before it monitors NPDCCH again (36.213 16.6)
+  static constexpr uint32_t UE_GAP_SF = 3;
+
+  /// UE-specific search space given in RRCConnectionSetup-NB: Rmax 1, G 8, offset 0
+  static search_space uss() { return {1, 16, 0}; }
+
   /**
-   * Plans DCI N1 (to rnti, in the Type-2 common search space) and the NPDSCH it points at, on the first candidate that
-   * starts in [t_min, t_max] with all its subframes free. pdu holds tbs bits. Caller holds the lock.
+   * Plans DCI N1 (to rnti, in search space ss) and the NPDSCH it points at, on the first candidate that starts in
+   * [t_min, t_max] with all its subframes free (and, with_ack, its HARQ-ACK clear of NPRACH). pdu holds tbs bits.
+   * Caller holds the lock.
    */
-  bool plan_css_dl(uint16_t                     rnti,
-                   const srsran_nbiot_dci_n1_t& dci,
-                   const uint8_t*               pdu,
-                   uint32_t                     tbs,
-                   uint64_t                     t_min,
-                   uint64_t                     t_max,
-                   dl_alloc&                    out,
-                   std::string&                 why);
+  bool plan_dl(const search_space&          ss,
+               uint16_t                     rnti,
+               const srsran_nbiot_dci_n1_t& dci,
+               const uint8_t*               pdu,
+               uint32_t                     tbs,
+               uint64_t                     t_min,
+               uint64_t                     t_max,
+               bool                         with_ack,
+               dl_alloc&                    out,
+               std::string&                 why);
 
   /// Contention resolution and RRCConnectionSetup-NB for the UE whose Msg3 carried ccch (TS 36.321 5.1.5, 36.331 5.3.3)
   bool send_msg4(uint16_t tc_rnti, const uint8_t* ccch, uint32_t ccch_len, std::string& why);

@@ -22,6 +22,7 @@
 #ifndef SRSRAN_GTPU_PDCP_ADAPTER_H
 #define SRSRAN_GTPU_PDCP_ADAPTER_H
 
+#include "srsran/interfaces/enb_nbiot_interfaces.h"
 #include "srsran/common/bearer_manager.h"
 #include "srsran/interfaces/enb_gtpu_interfaces.h"
 #include "srsran/srslog/logger.h"
@@ -49,9 +50,16 @@ public:
     }
     gtpu_obj->write_pdu(rnti, bearer.eps_bearer_id, std::move(pdu));
   }
+  /// PDCP of the NB-IoT carrier, which owns the NB-IoT RNTIs
+  void set_nbiot_pdcp(pdcp_interface_gtpu* p) { pdcp_nbiot_obj = p; }
+
   void write_sdu(uint16_t rnti, uint32_t eps_bearer_id, srsran::unique_byte_buffer_t sdu, int pdcp_sn = -1) override
   {
     auto bearer = bearers->get_radio_bearer(rnti, eps_bearer_id);
+    if (pdcp_nbiot_obj != nullptr && is_nbiot_rnti(rnti) && bearer.is_valid()) {
+      pdcp_nbiot_obj->write_sdu(rnti, bearer.lcid, std::move(sdu), pdcp_sn);
+      return;
+    }
     // route SDU to PDCP entity
     if (bearer.rat == srsran::srsran_rat_t::lte) {
       pdcp_lte_obj->write_sdu(rnti, bearer.lcid, std::move(sdu), pdcp_sn);
@@ -64,6 +72,9 @@ public:
   std::map<uint32_t, srsran::unique_byte_buffer_t> get_buffered_pdus(uint16_t rnti, uint32_t eps_bearer_id) override
   {
     auto bearer = bearers->get_radio_bearer(rnti, eps_bearer_id);
+    if (pdcp_nbiot_obj != nullptr && is_nbiot_rnti(rnti)) {
+      return pdcp_nbiot_obj->get_buffered_pdus(rnti, bearer.lcid);
+    }
     // route SDU to PDCP entity
     if (bearer.rat == srsran::srsran_rat_t::lte) {
       return pdcp_lte_obj->get_buffered_pdus(rnti, bearer.lcid);
@@ -79,6 +90,7 @@ private:
   gtpu*                 gtpu_obj     = nullptr;
   pdcp_interface_gtpu*  pdcp_lte_obj = nullptr;
   pdcp_interface_gtpu*  pdcp_nr_obj  = nullptr;
+  pdcp_interface_gtpu*  pdcp_nbiot_obj = nullptr;
   enb_bearer_manager*   bearers      = nullptr;
 };
 

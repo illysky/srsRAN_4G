@@ -44,6 +44,9 @@
 namespace srsenb {
 
 class gtpu_pdcp_adapter;
+class rrc_nbiot;
+class rrc_s1ap_mux;
+class nbiot_mac_interface_rrc;
 
 class enb_stack_lte final : public enb_stack_base,
                             public stack_interface_phy_lte,
@@ -147,6 +150,9 @@ public:
   // gtpu_interface_pdcp
   void write_pdu(uint16_t rnti, uint32_t lcid, srsran::unique_byte_buffer_t pdu);
 
+  /// Connects the NB-IoT MAC of the PHY to the NB-IoT RRC (any thread, once)
+  void set_nbiot_mac(nbiot_mac_interface_rrc* nb_mac);
+
 private:
   static const int STACK_MAIN_THREAD_PRIO = 4;
   // thread loop
@@ -185,6 +191,10 @@ private:
   srsenb::rrc  rrc;
   srsenb::gtpu gtpu;
   srsenb::s1ap s1ap;
+
+  // NB-IoT carrier: its own RRC, RLC and PDCP; S1AP reaches it through the mux
+  std::unique_ptr<rrc_nbiot>    nbiot_rrc;
+  std::unique_ptr<rrc_s1ap_mux> s1ap_mux;
 
   // RAT-specific interfaces
   phy_interface_stack_lte* phy = nullptr;
