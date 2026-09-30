@@ -913,8 +913,19 @@ bool s1ap::handle_paging(const asn1::s1ap::paging_s& msg)
   uint32_t ueid = msg->ue_id_idx_value.value.to_number();
   rrc->add_paging_id(ueid, msg->ue_paging_id.value);
   // Without the NB-IoT index, IMSI mod 1024 still gives the right paging occasion when nB <= T (TS 36.304 7.1)
+  uint32_t edrx_hf = 0, ptw_rf = 0;
+  if (msg->nb_io_t_paging_e_drx_info_present) {
+    // TS 36.413 9.2.1.140: the cycle in hyperframes; the window is (index + 1) x 2.56 s, 256 frames each
+    static const uint32_t hf[] = {2, 4, 6, 8, 10, 12, 14, 16, 32, 64, 128, 256, 512, 1024};
+    const auto&           e    = msg->nb_io_t_paging_e_drx_info.value;
+    const uint32_t        c    = e.nb_io_t_paging_e_drx_cycle.value;
+    edrx_hf                    = c < sizeof(hf) / sizeof(hf[0]) ? hf[c] : 0;
+    ptw_rf = 256 * (1 + (e.nb_io_t_paging_time_win_present ? (uint32_t)e.nb_io_t_paging_time_win.value : 0));
+  }
   rrc->add_paging_id_nbiot(msg->nb_io_t_ue_id_idx_value_present ? msg->nb_io_t_ue_id_idx_value.value.to_number() : ueid,
-                           msg->ue_paging_id.value);
+                           msg->ue_paging_id.value,
+                           edrx_hf,
+                           ptw_rf);
   return true;
 }
 

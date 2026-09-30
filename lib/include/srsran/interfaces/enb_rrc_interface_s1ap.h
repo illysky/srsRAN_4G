@@ -70,8 +70,14 @@ public:
   virtual int release_erab(uint16_t rnti, uint16_t erab_id) = 0;
 
   virtual void add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) = 0;
-  /// NB-IoT paging: nb_ueid is the NB-IoT UE Identity Index Value, IMSI mod 4096 (TS 36.413 9.2.1.141)
-  virtual void add_paging_id_nbiot(uint32_t nb_ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id) {}
+  /// NB-IoT paging: nb_ueid is the NB-IoT UE Identity Index Value, IMSI mod 4096 (TS 36.413 9.2.1.141); edrx_hf is
+  /// the eDRX cycle in hyperframes (0 without eDRX), ptw_rf the paging time window in radio frames
+  virtual void add_paging_id_nbiot(uint32_t                           nb_ueid,
+                                   const asn1::s1ap::ue_paging_id_c& ue_paging_id,
+                                   uint32_t                           edrx_hf,
+                                   uint32_t                           ptw_rf)
+  {
+  }
 
   /// TS 36.413, 8.2.1, 8.2.2, 8.2.3 - Notify UE of ERAB updates (done via RRC Reconfiguration Message)
   virtual int notify_ue_erab_updates(uint16_t rnti, srsran::const_span<uint8_t> nas_pdu) = 0;

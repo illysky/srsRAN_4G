@@ -152,6 +152,12 @@ public:
   /// First paging occasion of UE_ID at or after absolute subframe t (TS 36.304 7.1, 7.2), before NB-IoT DL subframe
   /// validity is applied (the NPDCCH starts at the first valid one from there)
   static uint64_t paging_occasion(const nbiot_ra_config& cfg, uint32_t ue_id, uint64_t t);
+  /// As paging_occasion, for a UE in eDRX: only inside its paging time window (TS 36.304 7.3); window_end is the last
+  /// subframe of the window of the returned occasion
+  static uint64_t
+  paging_occasion_edrx(const nbiot_ra_config& cfg, uint32_t ue_id, const nbiot_paging_id& id, uint64_t t, uint64_t* window_end);
+  /// Hashed_ID of an M-TMSI (TS 36.304 7.3)
+  static uint32_t hashed_id(uint32_t m_tmsi);
 
   /// Schedules the connected UEs; call once per subframe (txrx thread)
   void tick();

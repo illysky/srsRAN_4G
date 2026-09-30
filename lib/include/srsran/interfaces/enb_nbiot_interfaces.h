@@ -64,6 +64,8 @@ struct nbiot_paging_id {
   uint8_t              mmec   = 0;
   uint32_t             m_tmsi = 0;
   std::vector<uint8_t> imsi; ///< digits, if not s_tmsi
+  uint32_t             edrx_hf = 0; ///< eDRX cycle in hyperframes, 0 without eDRX
+  uint32_t             ptw_rf  = 0; ///< paging time window in radio frames
 };
 
 /// The NB-IoT MAC as seen by the NB-IoT RRC. Any thread.

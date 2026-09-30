@@ -520,7 +520,10 @@ void rrc_nbiot::write_dl_info(uint16_t rnti, srsran::unique_byte_buffer_t sdu)
   send_dl_dcch(*ue, msg, "DLInformationTransfer-NB");
 }
 
-void rrc_nbiot::add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& ue_paging_id)
+void rrc_nbiot::add_paging_id_nbiot(uint32_t                           ueid,
+                                    const asn1::s1ap::ue_paging_id_c& ue_paging_id,
+                                    uint32_t                           edrx_hf,
+                                    uint32_t                           ptw_rf)
 {
   if (mac == nullptr) {
     return;
@@ -545,6 +548,11 @@ void rrc_nbiot::add_paging_id(uint32_t ueid, const asn1::s1ap::ue_paging_id_c& u
       }
     }
     srsran::console("NB-IoT RRC: paging IMSI (UE_ID %u)\n", ueid);
+  }
+  // The paging time window follows from the S-TMSI (TS 36.304 7.3)
+  if (id.s_tmsi && edrx_hf > 0) {
+    id.edrx_hf = edrx_hf;
+    id.ptw_rf  = ptw_rf;
   }
   mac->page(ueid % 4096, id);
 }

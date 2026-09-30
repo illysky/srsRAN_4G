@@ -106,7 +106,60 @@ uint32_t type1_dci_rep(uint32_t r_max)
   return i;
 }
 
+uint64_t next_po(const nbiot_ra_config& c, uint32_t ue_id, const nbiot_paging_id& id, uint64_t t, uint64_t* end = nullptr)
+{
+  if (id.edrx_hf > 0) {
+    return nbiot_mac::paging_occasion_edrx(c, ue_id, id, t, end);
+  }
+  if (end != nullptr) {
+    *end = 0;
+  }
+  return nbiot_mac::paging_occasion(c, ue_id, t);
+}
+
 } // namespace
+
+uint32_t nbiot_mac::hashed_id(uint32_t m_tmsi)
+{
+  // 32-bit FCS over b31..b0 of the S-TMSI, msb first: CRC-32 with generator 0x04C11DB7, preset and inverted
+  uint32_t c = 0xFFFFFFFFu;
+  for (int i = 31; i >= 0; i--) {
+    const uint32_t bit = ((m_tmsi >> i) & 1u) ^ (c >> 31);
+    c                  = (c << 1) ^ (bit ? 0x04C11DB7u : 0u);
+  }
+  return ~c;
+}
+
+uint64_t nbiot_mac::paging_occasion_edrx(const nbiot_ra_config& c,
+                                         uint32_t               ue_id,
+                                         const nbiot_paging_id& id,
+                                         uint64_t               t,
+                                         uint64_t*              window_end)
+{
+  // PH: H-SFN mod T_eDRX,H = UE_ID_H mod T_eDRX,H; the window starts in SFN 256 * i_eDRX of the PH and lasts L * 100
+  // frames, possibly into the next hyperframe. UE_ID_H: the 12 msbs of the Hashed_ID, as P-RNTI is on the NPDCCH.
+  const uint64_t hf       = 10240;
+  const uint64_t T        = id.edrx_hf;
+  const uint64_t ue_id_h  = hashed_id(id.m_tmsi) >> 20;
+  const uint64_t ptw_sfn  = 256 * ((ue_id_h / T) % 4);
+  uint64_t       h        = t / hf >= T ? t / hf - T : 0;
+  h += (ue_id_h % T + T - h % T) % T;
+  for (; h <= t / hf + 2 * T; h += T) {
+    const uint64_t start = h * hf + ptw_sfn * 10;
+    const uint64_t end   = start + (uint64_t)id.ptw_rf * 10 - 1;
+    if (end < t) {
+      continue;
+    }
+    const uint64_t po = paging_occasion(c, ue_id, std::max(t, start));
+    if (po <= end) {
+      if (window_end != nullptr) {
+        *window_end = end;
+      }
+      return po;
+    }
+  }
+  return UINT64_MAX;
+}
 
 uint64_t nbiot_mac::paging_occasion(const nbiot_ra_config& c, uint32_t ue_id, uint64_t t)
 {
@@ -136,12 +189,20 @@ void nbiot_mac::page(uint32_t ue_id, const nbiot_paging_id& id)
   if (!initiated || cfg.paging_t_rf == 0) {
     return;
   }
-  const uint64_t now    = srsran_nbiot_dl_sched_now(sched);
-  const uint64_t expiry = now + (uint64_t)PAGING_CYCLES * cfg.paging_t_rf * 10 + PAGING_PLAN_SF;
+  const uint64_t now = srsran_nbiot_dl_sched_now(sched);
+  uint64_t       end = 0;
+  const uint64_t po  = next_po(cfg, ue_id, id, now + PAGING_LEAD_SF, &end);
+  if (po == UINT64_MAX) {
+    srsran::console("NB-IoT: no paging occasion for %s\n", id_str(id).c_str());
+    return;
+  }
+  // In eDRX the page waits for the UE's next paging time window, which may be many hyperframes away
+  const uint64_t expiry = std::max(now + (uint64_t)PAGING_CYCLES * cfg.paging_t_rf * 10 + PAGING_PLAN_SF, end + 1);
   for (page_entry& e : pages) {
     if (same_id(e.id, id)) {
-      e.expiry = expiry;
+      e.expiry = std::max(e.expiry, expiry);
       e.ue_id  = ue_id;
+      e.id     = id;
       return;
     }
   }
@@ -150,11 +211,24 @@ void nbiot_mac::page(uint32_t ue_id, const nbiot_paging_id& id)
   e.id     = id;
   e.expiry = expiry;
   pages.push_back(e);
-  srsran::console("NB-IoT: paging %s, UE_ID %u, first occasion at %llu (now %llu)\n",
-                  id_str(id).c_str(),
-                  ue_id,
-                  (unsigned long long)paging_occasion(cfg, ue_id, now + PAGING_LEAD_SF),
-                  (unsigned long long)now);
+  if (id.edrx_hf > 0) {
+    srsran::console("NB-IoT: paging %s, UE_ID %u, eDRX %u hyperframes, window %u frames: first occasion at H-SFN %llu "
+                    "SFN %llu (in %.2f s), window ends at %llu\n",
+                    id_str(id).c_str(),
+                    ue_id,
+                    id.edrx_hf,
+                    id.ptw_rf,
+                    (unsigned long long)(po / 10240) % 1024,
+                    (unsigned long long)(po / 10) % 1024,
+                    (po - now) / 1000.0,
+                    (unsigned long long)end);
+  } else {
+    srsran::console("NB-IoT: paging %s, UE_ID %u, first occasion at %llu (now %llu)\n",
+                    id_str(id).c_str(),
+                    ue_id,
+                    (unsigned long long)po,
+                    (unsigned long long)now);
+  }
 }
 
 void nbiot_mac::paging_answered(uint8_t mmec, uint32_t m_tmsi)
@@ -183,7 +257,7 @@ void nbiot_mac::schedule_paging(uint64_t now, std::vector<std::string>& log)
   // The earliest occasion not yet planned
   uint64_t po = UINT64_MAX;
   for (const page_entry& e : pages) {
-    po = std::min(po, paging_occasion(cfg, e.ue_id, std::max(now + PAGING_LEAD_SF, e.last_po + 1)));
+    po = std::min(po, next_po(cfg, e.ue_id, e.id, std::max(now + PAGING_LEAD_SF, e.last_po + 1)));
   }
   if (po > now + PAGING_PLAN_SF) {
     return;
@@ -191,7 +265,7 @@ void nbiot_mac::schedule_paging(uint64_t now, std::vector<std::string>& log)
   std::vector<page_entry*>             due;
   std::vector<const nbiot_paging_id*> ids;
   for (page_entry& e : pages) {
-    if (paging_occasion(cfg, e.ue_id, std::max(now + PAGING_LEAD_SF, e.last_po + 1)) == po && ids.size() < 16) {
+    if (next_po(cfg, e.ue_id, e.id, std::max(now + PAGING_LEAD_SF, e.last_po + 1)) == po && ids.size() < 16) {
       due.push_back(&e);
       ids.push_back(&e.id);
     }
