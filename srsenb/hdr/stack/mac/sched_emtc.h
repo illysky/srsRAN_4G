@@ -155,7 +155,7 @@ private:
     uint32_t                                                            ack_tti = 0;
     uint32_t                                                            i_tbs   = 0;
     uint32_t                                                            tbs     = 0; ///< bits
-    bool                                                                ndi     = false;
+    std::array<bool, SRSRAN_FDD_NOF_HARQ>                               ndi     = {}; ///< per process, as the UE compares it
     uint32_t                                                            nof_tx  = 0;
   };
   /// One UL HARQ process per UE; CE mode A has no PHICH, retransmissions are granted on MPDCCH
@@ -166,7 +166,7 @@ private:
     uint32_t pusch_tti = 0;
     uint32_t i_mcs     = 0;
     uint32_t tbs       = 0; ///< bits
-    bool     ndi       = false;
+    std::array<bool, SRSRAN_FDD_NOF_HARQ> ndi = {}; ///< per process, as the UE compares it
     uint32_t nof_tx    = 0;
   };
   struct ue_ctxt {

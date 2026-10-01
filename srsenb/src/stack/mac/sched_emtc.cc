@@ -440,7 +440,7 @@ bool sched_emtc::plan_ue_dl(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
       h.i_tbs         = i_tbs;
       h.tbs           = (uint32_t)srsran_ra_tbs_from_idx(i_tbs, 6);
       h.pid           = (h.pid + 1) % SRSRAN_FDD_NOF_HARQ;
-      h.ndi           = !h.ndi;
+      h.ndi[h.pid]    = !h.ndi[h.pid];
       h.nof_tx        = 0;
       h.active        = true;
       uint32_t left   = h.tbs / 8;
@@ -475,7 +475,7 @@ bool sched_emtc::plan_ue_dl(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
     dci.riv                                 = srsran_emtc_riv(0, 6);
     dci.mcs                                 = h.i_tbs;
     dci.harq_pid                            = h.pid;
-    dci.ndi                                 = h.ndi;
+    dci.ndi                                 = h.ndi[h.pid];
     dci.rv                                  = rv;
     dci.tpc                                 = 1; // 0 dB
     mp.nof_bits = srsran_emtc_dci_6_1a_pack(cell.nof_prb, cfg->dci_srs_6_1a, &dci, mp.dci);
@@ -587,7 +587,7 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
       h.i_mcs  = i_mcs;
       h.tbs    = (uint32_t)srsran_ra_tbs_from_idx(i_mcs, nof_rb);
       h.pid    = (h.pid + 1) % SRSRAN_FDD_NOF_HARQ;
-      h.ndi    = !h.ndi;
+      h.ndi[h.pid] = !h.ndi[h.pid];
       h.nof_tx = 0;
       h.active = true;
       ue.sr    = false;
@@ -612,7 +612,7 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
     dci.riv                                 = srsran_emtc_riv(0, nof_rb);
     dci.mcs                                 = h.i_mcs;
     dci.harq_pid                            = h.pid;
-    dci.ndi                                 = h.ndi;
+    dci.ndi                                 = h.ndi[h.pid];
     dci.rv                                  = rv;
     dci.tpc                                 = 1; // 0 dB
     mp.nof_bits = srsran_emtc_dci_6_0a_pack(cell.nof_prb, cfg->dci_srs_6_1a, &dci, mp.dci);
@@ -627,7 +627,7 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
     g.dci.freq_hop_fl     = srsran_dci_ul_t::SRSRAN_RA_PUSCH_HOP_DISABLED;
     g.dci.tb.mcs_idx      = h.i_mcs;
     g.dci.tb.rv           = rv;
-    g.dci.tb.ndi          = h.ndi;
+    g.dci.tb.ndi          = h.ndi[h.pid];
     g.tbs_bytes           = h.tbs / 8;
     g.pid                 = h.pid;
     g.current_tx_nb       = h.nof_tx - 1;
