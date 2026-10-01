@@ -1118,7 +1118,7 @@ int mac::get_ul_sched(uint32_t tti_tx_ul, ul_sched_list_t& ul_sched_res_list)
         p.pid           = g.pid;
         p.needs_pdcch   = false;
         p.dci           = g.dci;
-        p.softbuffer_rx = ue_db[g.rnti]->get_rx_softbuffer(enb_cc_idx, tti_tx_ul);
+        p.softbuffer_rx = ue_db[g.rnti]->get_rx_softbuffer(enb_cc_idx, g.pid); // asynchronous HARQ: retransmissions are not 8 TTIs apart
         if (p.softbuffer_rx == nullptr) {
           continue;
         }
