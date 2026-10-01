@@ -20,6 +20,7 @@
  */
 
 #include "srsenb/hdr/stack/mac/sched_emtc.h"
+#include <cmath>
 #include "srsran/support/srsran_assert.h"
 #include "srsran/common/standard_streams.h"
 #include "srsran/mac/pdu.h"
@@ -525,6 +526,28 @@ bool sched_emtc::plan_ue_dl(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
   return false;
 }
 
+/// Closed-loop PUSCH power control (accumulated TPC, TS 36.213 Table 5.1.1.1-2: 0 -1 dB, 1 0 dB, 2 +1 dB, 3 +3 dB).
+/// At most one step per 40 ms, so the SNR average has seen the last one before the next.
+uint32_t sched_emtc::ul_tpc(ue_ctxt& ue, uint32_t tti)
+{
+  static const float target_snr = 13.0f;
+  if (ue.ul_snr < -100 || tti_diff(tti, ue.tpc_tti) < 40) {
+    return 1;
+  }
+  uint32_t tpc = 1;
+  if (ue.ul_snr < target_snr - 3) {
+    tpc = 3;
+  } else if (ue.ul_snr < target_snr - 1) {
+    tpc = 2;
+  } else if (ue.ul_snr > target_snr + 3) {
+    tpc = 0;
+  }
+  if (tpc != 1) {
+    ue.tpc_tti = tti;
+  }
+  return tpc;
+}
+
 bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
 {
   static const uint32_t rv_seq[4] = {0, 2, 3, 1};
@@ -576,9 +599,9 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
       continue;
     }
     if (!h.active) {
-      uint32_t i_mcs = 9; // on a bare SR, room for an RRC message
+      uint32_t i_mcs = ue.ul_mcs_max; // on a bare SR, room for an RRC message when the link allows MCS 9
       if (pending > 0) {
-        for (i_mcs = 0; i_mcs < 9; i_mcs++) {
+        for (i_mcs = 0; i_mcs < ue.ul_mcs_max; i_mcs++) {
           if (srsran_ra_tbs_from_idx(i_mcs, nof_rb) >= (int)((pending + 4) * 8)) {
             break;
           }
@@ -614,7 +637,7 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
     dci.harq_pid                            = h.pid;
     dci.ndi                                 = h.ndi[h.pid];
     dci.rv                                  = rv;
-    dci.tpc                                 = 1; // 0 dB
+    dci.tpc                                 = ul_tpc(ue, u);
     mp.nof_bits = srsran_emtc_dci_6_0a_pack(cell.nof_prb, cfg->dci_srs_6_1a, &dci, mp.dci);
     dl[m].mpdcch.push_back(mp);
     dl[m].nbs |= 1U << ue.nb;
@@ -636,12 +659,16 @@ bool sched_emtc::plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl)
     ue.rx_busy.set(m);
     ue.tx_busy.set(u);
 
-    srsran::console("LTE-M UL: 0x%x HARQ %d tx %d (rv %d, TBS %d, %d B pending): MPDCCH %d, PUSCH %d on PRB %d-%d\n",
+    srsran::console("LTE-M UL: 0x%x HARQ %d tx %d (rv %d, MCS %d, TBS %d, TPC %d, SNR %.1f dB, %d B pending): MPDCCH %d, "
+                    "PUSCH %d on PRB %d-%d\n",
                     rnti,
                     h.pid,
                     h.nof_tx,
                     rv,
+                    h.i_mcs,
                     h.tbs,
+                    dci.tpc,
+                    ue.ul_snr,
                     pending,
                     m,
                     u,
@@ -876,9 +903,20 @@ int sched_emtc::ul_crc_info(uint32_t tti, uint16_t rnti, uint32_t enb_cc_idx, bo
   std::lock_guard<std::mutex> lock(mutex);
   auto                        it = ues.find(rnti);
   if (it != ues.end() && it->second.ulh.waiting && it->second.ulh.pusch_tti == tti % NOF_TTI) {
-    it->second.ulh.waiting = false;
+    ue_ctxt& ue       = it->second;
+    ue.ulh.waiting    = false;
+    if (ue.ulh.nof_tx == 1) {
+      // MCS cap from first transmissions: down 2 on a failure, up 1 after 10 in a row decoded
+      if (!crc) {
+        ue.ul_mcs_max = std::max(2u, ue.ul_mcs_max - std::min(2u, ue.ul_mcs_max));
+        ue.ul_ok_run  = 0;
+      } else if (++ue.ul_ok_run >= 10 && ue.ul_mcs_max < 9) {
+        ue.ul_mcs_max++;
+        ue.ul_ok_run = 0;
+      }
+    }
     if (crc) {
-      it->second.ulh.active = false;
+      ue.ulh.active = false;
     }
   }
   return SRSRAN_SUCCESS;
@@ -916,6 +954,15 @@ int sched_emtc::ul_phr(uint16_t rnti, int phr, uint32_t ul_nof_prb)
 
 int sched_emtc::ul_snr_info(uint32_t tti, uint16_t rnti, uint32_t enb_cc_idx, float snr, uint32_t ul_ch_code)
 {
+  if (ul_ch_code != mac_interface_phy_lte::PUSCH || !std::isfinite(snr)) {
+    return SRSRAN_SUCCESS;
+  }
+  std::lock_guard<std::mutex> lock(mutex);
+  auto                        it = ues.find(rnti);
+  if (it != ues.end()) {
+    float& avg = it->second.ul_snr;
+    avg        = avg < -100 ? snr : 0.7f * avg + 0.3f * snr;
+  }
   return SRSRAN_SUCCESS;
 }
 

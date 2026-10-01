@@ -179,6 +179,11 @@ private:
     bool                                             sr         = false;
     std::array<uint32_t, 4>                          ul_lcg     = {}; ///< BSR per LCG (bytes)
     ul_harq                                          ulh;
+    /// UL link adaptation: PUSCH SNR average (dB, < -100 before the first), MCS cap, first-transmission CRC OK run
+    float                                            ul_snr     = -1000;
+    uint32_t                                         ul_mcs_max = 9;
+    uint32_t                                         ul_ok_run  = 0;
+    uint32_t                                         tpc_tti    = 0; ///< last grant with a non-zero TPC
     srsran_pucch_cfg_t                               pucch      = {};
     srsran_cqi_report_cfg_t                          cqi        = {};
     /// Half-duplex FDD (type B, TS 36.211 6.2.5): subframes the UE receives in / transmits in
@@ -195,6 +200,7 @@ private:
   void     plan_dl(uint32_t tti_tx_dl);
   bool     plan_ue_dl(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl);
   bool     plan_ue_ul(uint16_t rnti, ue_ctxt& ue, uint32_t tti_tx_dl);
+  uint32_t ul_tpc(ue_ctxt& ue, uint32_t tti);
   void     plan_paging(uint32_t po);
   uint32_t pucch_prb(uint32_t n_pucch, uint32_t tti) const;
   void     gc(uint32_t tti_tx_dl);
