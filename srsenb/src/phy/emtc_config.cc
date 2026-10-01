@@ -155,6 +155,9 @@ bool load(const std::string& path, config& o, std::string& err)
   if (ok && c.exists("emtc.dci_srs_6_1a")) {
     c.lookupValue("emtc.dci_srs_6_1a", o.dci_srs_6_1a);
   }
+  if (ok && c.exists("emtc.sib1_skip_si_start")) {
+    c.lookupValue("emtc.sib1_skip_si_start", o.sib1_skip_si_start);
+  }
   if (!ok) {
     return false;
   }
@@ -267,6 +270,7 @@ bool build_bcast(const rrc_cfg_t& rrc_cfg,
   out.sched.pci                = pci;
   out.sched.sched_info_sib1_br = cfg.sched_info_sib1_br;
   out.sched.si_window_ms       = cfg.si_window_ms;
+  out.sib1_skip_si_start       = cfg.sib1_skip_si_start;
   out.sched.si_repetition_rf   = cfg.si_repetition_rf;
   out.sched.nof_si             = (uint32_t)cfg.si.size();
   for (size_t i = 0; i < cfg.si.size(); i++) {

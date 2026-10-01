@@ -48,6 +48,7 @@ struct config {
   uint32_t start_symbol       = 3; ///< startSymbolBR: first OFDM symbol of MPDCCH/PDSCH (not SIB1-BR)
   uint32_t si_window_ms       = 40;
   uint32_t si_repetition_rf   = 1; ///< si-RepetitionPattern: SI message in every 1, 2, 4 or 8 radio frames
+  bool     sib1_skip_si_start = false; ///< no SIB1-BR in the 80 ms SIB1-BR period in which the SIB2 window starts
   struct si_msg {
     uint32_t periodicity_rf = 16;
     uint32_t nb             = 0;
@@ -95,6 +96,7 @@ struct bcast {
   std::vector<std::vector<uint8_t>> si;         ///< BCCH-DL-SCH-BR SystemInformation-BR, zero padded to each si-TBS
   size_t                            sib1_len = 0; ///< unpadded bytes
   int                               sib1_hsfn_bit = -1; ///< first bit of hyperSFN-r13 in sib1, set per transmission
+  bool                              sib1_skip_si_start = false; ///< config::sib1_skip_si_start
   std::vector<size_t>               si_len;
 };
 

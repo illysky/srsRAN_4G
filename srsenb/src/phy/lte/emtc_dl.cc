@@ -144,8 +144,10 @@ void emtc_dl::put_sf(uint32_t tti, const mac_interface_phy_lte::dl_sched_t& gran
   const uint32_t hsfn = emtc::hsfn(tti);
   uint32_t       nb = 0, rv = 0;
 
-  // SIB1-BR: N_acc = 1, starts at symbol 3 above 10 PRB (TS 36.213 7.1.6.4A)
-  if (srsran_emtc_sib1_br(&bc->sched, sfn, sf, &nb, &rv)) {
+  // SIB1-BR: N_acc = 1, starts at symbol 3 above 10 PRB (TS 36.213 7.1.6.4A). The nRF91 (mfw 2.0.4) takes an all-zero
+  // SIB2 when it decodes SIB1-BR in the 80 ms period in which the SIB2 window starts, so that period may go without.
+  const bool sib1_skip = bc->sib1_skip_si_start && bc->sched.nof_si > 0 && sfn % bc->sched.si[0].periodicity_rf < 8;
+  if (!sib1_skip && srsran_emtc_sib1_br(&bc->sched, sfn, sf, &nb, &rv)) {
     sib1_buf = bc->sib1;
     for (int i = 0; i < 10 && bc->sib1_hsfn_bit >= 0; i++) {
       const uint32_t b = (uint32_t)bc->sib1_hsfn_bit + i;
