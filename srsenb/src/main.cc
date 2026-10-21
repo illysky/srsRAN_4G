@@ -680,6 +680,7 @@ static void ctrl_loop(srsenb::enb_command_interface* control, const string& path
       string reply_log = reply;
       reply_log.erase(reply_log.find_last_not_of(" \r\n\t") + 1);
       srslog::fetch_basic_logger("ENB").info("ctrl: '%s' -> %s", line.c_str(), reply_log.c_str());
+      srslog::flush(); // so the line is visible in enb.log right away
       ssize_t w    = write(c, reply.data(), reply.size());
       (void)w;
     }

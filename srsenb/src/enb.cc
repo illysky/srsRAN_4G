@@ -320,6 +320,7 @@ void enb::cmd_tx_gain(float gain_db)
   if (auto* r = dynamic_cast<srsran::radio_interface_phy*>(radio.get())) {
     r->set_tx_gain(gain_db);
     srslog::fetch_basic_logger("ENB").info("ctrl: RF TX gain set to %.1f dB", gain_db);
+    srslog::flush();
   }
 }
 
@@ -328,6 +329,7 @@ void enb::cmd_rx_gain(float gain_db)
   if (auto* r = dynamic_cast<srsran::radio_interface_phy*>(radio.get())) {
     r->set_rx_gain(gain_db);
     srslog::fetch_basic_logger("ENB").info("ctrl: RF RX gain set to %.1f dB", gain_db);
+    srslog::flush();
   }
 }
 
