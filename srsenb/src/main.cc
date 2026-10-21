@@ -677,6 +677,9 @@ static void ctrl_loop(srsenb::enb_command_interface* control, const string& path
       string line  = buf;
       line.erase(line.find_last_not_of(" \r\n\t") + 1);
       string reply = execute_ctrl_cmd(control, line);
+      string reply_log = reply;
+      reply_log.erase(reply_log.find_last_not_of(" \r\n\t") + 1);
+      srslog::fetch_basic_logger("ENB").info("ctrl: '%s' -> %s", line.c_str(), reply_log.c_str());
       ssize_t w    = write(c, reply.data(), reply.size());
       (void)w;
     }
