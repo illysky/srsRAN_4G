@@ -27,6 +27,7 @@
 #include "srsran/interfaces/enb_s1ap_interfaces.h"
 #include "srsue/hdr/stack/upper/gw.h"
 #include <string>
+#include <vector>
 
 namespace srsenb {
 
@@ -96,6 +97,10 @@ public:
   virtual bool get_metrics(stack_metrics_t* metrics) = 0;
 
   virtual void tti_clock() = 0;
+
+  // runtime control (default: unsupported)
+  virtual std::vector<uint16_t> list_ues() { return {}; }
+  virtual uint32_t              release_ue(uint16_t rnti) { return 0; }
 };
 
 } // namespace srsenb

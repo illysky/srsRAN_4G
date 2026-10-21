@@ -28,6 +28,8 @@
 #include "srsran/interfaces/enb_x2_interfaces.h"
 #include "srsran/rlc/bearer_mem_pool.h"
 #include "srsran/srslog/event_trace.h"
+#include <chrono>
+#include <future>
 
 using namespace srsran;
 
@@ -221,6 +223,43 @@ void enb_stack_lte::stop_impl()
   get_background_workers().stop();
 
   started = false;
+}
+
+std::vector<uint16_t> enb_stack_lte::list_ues()
+{
+  auto prom = std::make_shared<std::promise<std::vector<uint16_t> > >();
+  auto fut  = prom->get_future();
+  if (not enb_task_queue.try_push([this, prom]() { prom->set_value(rrc.get_rntis()); }).has_value()) {
+    return {};
+  }
+  if (fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return {};
+  }
+  return fut.get();
+}
+
+uint32_t enb_stack_lte::release_ue(uint16_t rnti)
+{
+  auto prom = std::make_shared<std::promise<uint32_t> >();
+  auto fut  = prom->get_future();
+  auto ret  = enb_task_queue.try_push([this, rnti, prom]() {
+    std::vector<uint16_t> targets;
+    if (rnti == 0) {
+      targets = rrc.get_rntis();
+    } else {
+      targets.push_back(rnti);
+    }
+    uint32_t n = 0;
+    for (uint16_t r : targets) {
+      stack_logger.info("ctrl: releasing rnti=0x%x", r);
+      n += s1ap.user_release(r, asn1::s1ap::cause_radio_network_opts::unspecified) ? 1 : 0;
+    }
+    prom->set_value(n);
+  });
+  if (not ret.has_value() or fut.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+    return 0;
+  }
+  return fut.get();
 }
 
 bool enb_stack_lte::get_metrics(stack_metrics_t* metrics)

@@ -19,7 +19,12 @@
  *
  */
 
+#include <cstring>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sstream>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +63,7 @@ namespace bpo = boost::program_options;
  ***********************************************************************/
 string                   config_file;
 static bool              stdout_ts_enable = false;
+static string            ctrl_socket_path;
 static srslog::sink*     log_sink         = nullptr;
 static std::atomic<bool> running          = {true};
 
@@ -270,6 +276,7 @@ void parse_args(all_args_t* args, int argc, char* argv[])
     ("expert.tracing_enable",  bpo::value<bool>(&args->general.tracing_enable)->default_value(false), "Events tracing.")
     ("expert.tracing_filename", bpo::value<string>(&args->general.tracing_filename)->default_value("/tmp/enb_tracing.log"), "Tracing events filename.")
     ("expert.tracing_buffcapacity", bpo::value<std::size_t>(&args->general.tracing_buffcapacity)->default_value(1000000), "Tracing buffer capcity.")
+    ("expert.ctrl_socket", bpo::value<string>(&ctrl_socket_path)->default_value(""), "Unix socket path for the runtime control interface (tx_gain, rx_gain, ues, release). Empty disables it.")
     ("expert.stdout_ts_enable", bpo::value<bool>(&stdout_ts_enable)->default_value(false), "Prints once per second the timestamp into stdout.")
     ("expert.rrc_inactivity_timer", bpo::value<uint32_t>(&args->general.rrc_inactivity_timer)->default_value(30000), "Inactivity timer in ms.")
     ("expert.print_buffer_state", bpo::value<bool>(&args->general.print_buffer_state)->default_value(false), "Prints on the console the buffer state every 10 seconds.")
@@ -597,6 +604,88 @@ static void* input_loop(metrics_stdout* metrics, srsenb::enb_command_interface* 
   return nullptr;
 }
 
+/// Executes one runtime control command and returns the reply text.
+static string execute_ctrl_cmd(srsenb::enb_command_interface* control, const string& line)
+{
+  vector<string> cmd;
+  srsran::string_parse_list(line, ' ', cmd);
+  std::ostringstream out;
+  if (cmd.empty()) {
+    out << "ERR empty command\n";
+  } else if ((cmd[0] == "tx_gain" || cmd[0] == "rx_gain") && cmd.size() == 2) {
+    float g = srsran::string_cast<float>(cmd[1]);
+    if (cmd[0] == "tx_gain") {
+      control->cmd_tx_gain(g);
+    } else {
+      control->cmd_rx_gain(g);
+    }
+    out << "OK " << cmd[0] << " " << g << "\n";
+  } else if (cmd[0] == "ues") {
+    out << "OK";
+    for (uint16_t r : control->cmd_list_ues()) {
+      out << " 0x" << std::hex << r;
+    }
+    out << "\n";
+  } else if (cmd[0] == "release" && cmd.size() == 2) {
+    uint16_t rnti = (cmd[1] == "all") ? 0 : (uint16_t)std::stoul(cmd[1], nullptr, 0);
+    out << "OK released " << control->cmd_release_ue(rnti) << "\n";
+  } else {
+    out << "ERR usage: tx_gain <dB> | rx_gain <dB> | ues | release <rnti|all>\n";
+  }
+  return out.str();
+}
+
+/// Serves line-based commands on a unix socket until 'running' is cleared.
+static void ctrl_loop(srsenb::enb_command_interface* control, const string& path)
+{
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    cout << "ctrl: socket() failed" << endl;
+    return;
+  }
+  sockaddr_un addr = {};
+  addr.sun_family  = AF_UNIX;
+  if (path.size() >= sizeof(addr.sun_path)) {
+    cout << "ctrl: socket path too long" << endl;
+    close(fd);
+    return;
+  }
+  strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+  unlink(path.c_str());
+  if (bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || listen(fd, 4) < 0) {
+    cout << "ctrl: cannot bind " << path << endl;
+    close(fd);
+    return;
+  }
+  chmod(path.c_str(), 0660);
+  cout << "Control socket listening on " << path << endl;
+  while (running) {
+    struct pollfd pfd = {fd, POLLIN, 0};
+    if (poll(&pfd, 1, 500) != 1) {
+      continue;
+    }
+    int c = accept(fd, nullptr, nullptr);
+    if (c < 0) {
+      continue;
+    }
+    struct timeval tv = {2, 0};
+    setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char    buf[256];
+    ssize_t n = read(c, buf, sizeof(buf) - 1);
+    if (n > 0) {
+      buf[n]       = 0;
+      string line  = buf;
+      line.erase(line.find_last_not_of(" \r\n\t") + 1);
+      string reply = execute_ctrl_cmd(control, line);
+      ssize_t w    = write(c, reply.data(), reply.size());
+      (void)w;
+    }
+    close(c);
+  }
+  close(fd);
+  unlink(path.c_str());
+}
+
 /// Adjusts the input value in args from kbytes to bytes.
 static size_t fixup_log_file_maxsize(int x)
 {
@@ -707,6 +796,11 @@ int main(int argc, char* argv[])
   // create input thread
   std::thread input(&input_loop, &metrics_screen, (enb_command_interface*)enb.get());
 
+  std::thread ctrl;
+  if (!ctrl_socket_path.empty()) {
+    ctrl = std::thread(&ctrl_loop, (enb_command_interface*)enb.get(), ctrl_socket_path);
+  }
+
   if (running) {
     if (args.gui.enable) {
       enb->start_plot();
@@ -740,6 +834,9 @@ int main(int argc, char* argv[])
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   input.join();
+  if (ctrl.joinable()) {
+    ctrl.join();
+  }
   metricshub.stop();
   enb->stop();
   cout << "---  exiting  ---" << endl;

@@ -23,6 +23,7 @@
 #define SRSRAN_ENB_COMMAND_INTERFACE_H
 
 #include <cstdint>
+#include <vector>
 
 namespace srsenb {
 class enb_command_interface
@@ -41,6 +42,16 @@ public:
   virtual void cmd_cell_gain(uint32_t cell_id, float gain) = 0;
 
   virtual void toggle_padding() = 0;
+
+  /// Sets the RF TX/RX gain (dB) on the radio at runtime
+  virtual void cmd_tx_gain(float gain_db) = 0;
+  virtual void cmd_rx_gain(float gain_db) = 0;
+
+  /// Lists connected UE RNTIs (RRC)
+  virtual std::vector<uint16_t> cmd_list_ues() = 0;
+
+  /// Releases a UE through S1AP (rnti==0 releases all). Returns the number of releases requested.
+  virtual uint32_t cmd_release_ue(uint16_t rnti) = 0;
 };
 } // namespace srsenb
 

@@ -227,6 +227,16 @@ uint32_t rrc::get_nof_users()
   return users.size();
 }
 
+std::vector<uint16_t> rrc::get_rntis() const
+{
+  std::vector<uint16_t> v;
+  v.reserve(users.size());
+  for (const auto& u : users) {
+    v.push_back(u.first);
+  }
+  return v;
+}
+
 void rrc::max_retx_attempted(uint16_t rnti)
 {
   rrc_pdu p = {rnti, LCID_RLC_RTX, false, nullptr};

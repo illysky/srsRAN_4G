@@ -148,6 +148,7 @@ public:
   void notify_pdcp_integrity_error(uint16_t rnti, uint32_t lcid) override;
 
   uint32_t get_nof_users();
+  std::vector<uint16_t> get_rntis() const;
 
   // logging
   enum direction_t { Rx = 0, Tx, toS1AP, fromS1AP };

@@ -315,6 +315,30 @@ void enb::cmd_cell_gain(uint32_t cell_id, float gain)
   phy->cmd_cell_gain(cell_id, gain);
 }
 
+void enb::cmd_tx_gain(float gain_db)
+{
+  if (auto* r = dynamic_cast<srsran::radio_interface_phy*>(radio.get())) {
+    r->set_tx_gain(gain_db);
+  }
+}
+
+void enb::cmd_rx_gain(float gain_db)
+{
+  if (auto* r = dynamic_cast<srsran::radio_interface_phy*>(radio.get())) {
+    r->set_rx_gain(gain_db);
+  }
+}
+
+std::vector<uint16_t> enb::cmd_list_ues()
+{
+  return eutra_stack ? eutra_stack->list_ues() : std::vector<uint16_t>{};
+}
+
+uint32_t enb::cmd_release_ue(uint16_t rnti)
+{
+  return eutra_stack ? eutra_stack->release_ue(rnti) : 0;
+}
+
 void enb::cmd_cell_measure()
 {
   phy->cmd_cell_measure();

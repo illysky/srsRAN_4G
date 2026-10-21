@@ -155,6 +155,10 @@ public:
 
   // eNodeB command interface
   void cmd_cell_gain(uint32_t cell_id, float gain) override;
+  void cmd_tx_gain(float gain_db) override;
+  void cmd_rx_gain(float gain_db) override;
+  std::vector<uint16_t> cmd_list_ues() override;
+  uint32_t              cmd_release_ue(uint16_t rnti) override;
 
   void cmd_cell_measure() override;
 

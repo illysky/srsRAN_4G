@@ -120,6 +120,10 @@ public:
   void toggle_padding() override { mac.toggle_padding(); }
   void tti_clock() override;
 
+  // runtime control (any thread; executed on the stack thread)
+  std::vector<uint16_t> list_ues() override;
+  uint32_t              release_ue(uint16_t rnti) override;
+
   // rrc_eutra_interface_rrc_nr
   void sgnb_addition_ack(uint16_t eutra_rnti, sgnb_addition_ack_params_t params) final
   {
